@@ -16,7 +16,8 @@ class Edgar:
         self.s = requests.Session()
         self.s.headers.update({"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"})
 
-    def _get(self, url):
+    def _get(self, url, soft=False):
+        """soft=True: for files that may simply not exist yet (EDGAR answers 403/404 for those) - no retries."""
         for attempt in range(4):
             time.sleep(0.15)
             try:
@@ -27,7 +28,8 @@ class Edgar:
                 continue
             if r.status_code == 200:
                 return r.text
-            if r.status_code == 404:
+            if r.status_code == 404 or (soft and r.status_code == 403):
+                log.info("not available (HTTP %s): %s", r.status_code, url)
                 return None
             log.warning("HTTP %s for %s", r.status_code, url)
             time.sleep(5 * (attempt + 1))
@@ -41,7 +43,7 @@ class Edgar:
         """Form 4 filings listed in the EDGAR daily index (published after the day closes)."""
         q = (day.month - 1) // 3 + 1
         url = f"https://www.sec.gov/Archives/edgar/daily-index/{day.year}/QTR{q}/form.{day:%Y%m%d}.idx"
-        txt = self._get(url)
+        txt = self._get(url, soft=True)
         out = {}
         for line in (txt or "").splitlines():
             m = IDX_RE.match(line)
@@ -57,6 +59,7 @@ class Edgar:
                    f"&dateb=&owner=include&start={p * 100}&count=100&output=atom")
             txt = self._get(url)
             if not txt:
+                log.warning("live Form 4 feed unavailable - if this persists check SEC_USER_AGENT (name + real email)")
                 break
             try:
                 root = ET.fromstring(txt)
