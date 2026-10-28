@@ -36,3 +36,10 @@ ACTIVE_END = os.getenv("ACTIVE_END", "21:00")
 ACTIVE_DAYS = os.getenv("ACTIVE_DAYS", "0,1,2,3,4")   # 0=Mon ... 6=Sun
 ENFORCE_SCHEDULE = _b("ENFORCE_SCHEDULE", True)
 HONOR_HOLIDAYS = _b("HONOR_HOLIDAYS", True)   # EDGAR is closed on US federal holidays
+
+# Offering watch, fresh prices, outcome tracking
+OFFERING_CHECK = _b("OFFERING_CHECK", True)
+OFFERING_ACTION = os.getenv("OFFERING_ACTION", "flag").strip().lower()   # flag = send with warning, hold = don't send
+OFFERING_WATCH_DAYS = _i("OFFERING_WATCH_DAYS", 30)                      # follow-up window after an alert
+EXT_MOVE_WARN = _f("EXT_MOVE_WARN", 0.05)                                # warn if pre/after-hours move >= 5%
+TRACK_OUTCOMES = _b("TRACK_OUTCOMES", True)

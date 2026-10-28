@@ -1,4 +1,5 @@
 """Minimal, polite SEC EDGAR client (<10 req/s, descriptive User-Agent)."""
+import json
 import re
 import time
 import logging
@@ -75,6 +76,14 @@ class Edgar:
                     acc = f"{m.group(2)}-{m.group(3)}-{m.group(4)}"
                     out[acc] = f"edgar/data/{m.group(1)}/{acc}.txt"
         return out
+
+    def submissions(self, cik):
+        """Recent filing list for an issuer (data.sec.gov). None if unavailable."""
+        txt = self._get(f"https://data.sec.gov/submissions/CIK{int(cik):010d}.json")
+        try:
+            return json.loads(txt) if txt else None
+        except ValueError:
+            return None
 
     def filing_text(self, path):
         return self._get(f"https://www.sec.gov/Archives/{path}")

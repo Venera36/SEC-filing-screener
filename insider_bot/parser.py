@@ -3,6 +3,10 @@ import re
 import xml.etree.ElementTree as ET
 
 XML_RE = re.compile(r"<ownershipDocument>.*?</ownershipDocument>", re.S)
+OFFERING = re.compile(
+    r"public offering|private placement|underwritten|registered direct|securities purchase agreement|"
+    r"subscription agreement|follow-on|initial public offering|\bIPO\b|\bPIPE\b|rights offering|at-the-market",
+    re.I)
 TIER3 = re.compile(r"\b(ceo|cfo|coo|chief\s+executive|chief\s+financial|chief\s+operating)\b", re.I)
 TIER2 = re.compile(r"\b(chief|president|chairman|chair|general\s+counsel)\b", re.I)
 
@@ -65,11 +69,18 @@ def parse_form4(text):
     if not title and is_dir:
         title = "Director"
 
+    notes = {f.get("id"): " ".join(f.itertext()) for f in root.findall("footnotes/footnote")}
+    remarks = root.findtext("remarks") or ""
+
     rows = []
     for t in root.findall("nonDerivativeTable/nonDerivativeTransaction"):
         if (t.findtext("transactionCoding/transactionCode") or "").strip() != "P":
             continue
         if (t.findtext("transactionAmounts/transactionAcquiredDisposedCode/value") or "").strip() != "A":
+            continue
+        # Code P also covers buys in company financings; those are not open-market purchases.
+        linked = " ".join(notes.get(fn.get("id"), "") for fn in t.iter("footnoteId"))
+        if OFFERING.search(linked + " " + remarks):
             continue
         shares = _num(t, "transactionAmounts/transactionShares/value")
         price = _num(t, "transactionAmounts/transactionPricePerShare/value")

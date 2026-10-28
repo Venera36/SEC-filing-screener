@@ -31,6 +31,16 @@ Market cap choice: $200M–$10B. Below that, liquidity/manipulation risk; above 
 4. Add variables: `SEC_USER_AGENT` (must contain your name + email, SEC requirement), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DATA_DIR=/data`.
 5. Add a **Volume** mounted at `/data` (otherwise SQLite is wiped on redeploy and you'll get duplicate alerts).
 
+## Safety checks and tracking
+- **Fresh prices:** alerts use the latest price including pre-market/after-hours, labelled in the message, and warn if the
+  extended-hours move is >= `EXT_MOVE_WARN` (5%).
+- **Offering check:** before alerting, EDGAR is checked for offering-related filings (424B prospectuses, FWP, S-1, 8-K item 3.02)
+  since 3 days before the first purchase. `OFFERING_ACTION=flag` (default) sends the alert with a warning; `hold` suppresses it.
+- **Offering watch:** for `OFFERING_WATCH_DAYS` (30) after each alert, a follow-up message is sent if an offering is filed.
+- **Outcome tracking:** each alert's price is stored; 5/20/60 trading days later the result is sent to Telegram.
+  Run `python -m insider_bot.main --report` (e.g. `railway run ...`) for a summary table with average return and win rate.
+  Alerts sent before this feature existed are not tracked.
+
 ## Schedule
 By default the bot only polls **Mon-Fri, 05:00-21:00 America/Chicago, skipping US federal holidays** (EDGAR accepts filings 6am-10pm ET = 5am-9pm CT) (handles CST/CDT automatically) and sleeps otherwise.
 On waking it re-scans the SEC daily index, so filings made overnight or over the weekend are still picked up (the SEC

@@ -10,7 +10,12 @@ CREATE TABLE IF NOT EXISTS purchases(
   PRIMARY KEY(accession, idx));
 CREATE INDEX IF NOT EXISTS ix_p_date ON purchases(tx_date);
 CREATE TABLE IF NOT EXISTS alerts(ticker TEXT, sent_at REAL, total REAL, insiders TEXT);
+CREATE TABLE IF NOT EXISTS tracked(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT, cik TEXT, alert_date TEXT, alert_price REAL,
+  score INTEGER, total REAL, offering_notified INTEGER DEFAULT 0, last_offering_check REAL DEFAULT 0,
+  last_outcome_check TEXT DEFAULT '', ret5 REAL, ret20 REAL, ret60 REAL);
 """
+TRACKED_COLS = {"offering_notified", "last_offering_check", "last_outcome_check", "ret5", "ret20", "ret60"}
 
 
 class DB:
@@ -44,3 +49,24 @@ class DB:
         with self.c:
             self.c.execute("INSERT INTO alerts VALUES(?,?,?,?)",
                            (ticker, time.time(), total, "|".join(sorted(insiders))))
+
+    # ---- outcome / offering tracking ----
+    def add_tracked(self, ticker, cik, alert_date, price, score, total, offering_flagged):
+        with self.c:
+            self.c.execute(
+                "INSERT INTO tracked(ticker,cik,alert_date,alert_price,score,total,offering_notified) VALUES(?,?,?,?,?,?,?)",
+                (ticker, cik, alert_date, price, score, total, int(bool(offering_flagged))))
+
+    def open_tracked(self, since_iso):
+        return self.c.execute("SELECT * FROM tracked WHERE alert_date>=?", (since_iso,)).fetchall()
+
+    def all_tracked(self):
+        return self.c.execute("SELECT * FROM tracked ORDER BY alert_date").fetchall()
+
+    def update_tracked(self, row_id, **fields):
+        bad = set(fields) - TRACKED_COLS
+        if bad:
+            raise ValueError(f"unknown columns {bad}")
+        sets = ",".join(f"{k}=?" for k in fields)
+        with self.c:
+            self.c.execute(f"UPDATE tracked SET {sets} WHERE id=?", (*fields.values(), row_id))

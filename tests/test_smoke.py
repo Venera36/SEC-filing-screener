@@ -37,8 +37,52 @@ def test_pipeline():
     print(sc, why); assert sc >= 60
     assert screener.market_gate(c, dict(m, ret60=0.9))      # run-up rejected
 
+def test_offering_excluded():
+    f = filing("Jane CEO", "CEO", 100000, 10.0, 200000)
+    f = f.replace("</value></transactionPricePerShare>", '</value><footnoteId id="F1"/></transactionPricePerShare>', 1)
+    f = f.replace("</ownershipDocument>", '<footnotes><footnote id="F1">Purchased in the issuer\'s underwritten public offering.</footnote></footnotes></ownershipDocument>')
+    assert parse_form4(f) == []
+
+def test_new_features():
+    import tempfile, datetime as dt
+    from insider_bot import offerings, market, telegram
+    from insider_bot.db import DB
+
+    class Fake:
+        def submissions(self, cik):
+            return {"filings": {"recent": {
+                "form": ["424B5", "8-K", "8-K", "4", "FWP"],
+                "filingDate": ["2026-10-27", "2026-10-27", "2026-10-20", "2026-10-23", "2026-10-10"],
+                "items": ["", "3.02,9.01", "8.01", "", ""]}}}
+    assert offerings.find(Fake(), "1", "2026-10-22") == ["424B5 2026-10-27", "8-K 2026-10-27"]
+    assert offerings.find(Fake(), "1", "2026-10-28") == []
+    class Down:
+        def submissions(self, cik): return None
+    assert offerings.find(Down(), "1", "2026-10-22") is None
+
+    et = lambda d, h, m: dt.datetime(2026, 10, d, h, m)
+    assert market.label_session(et(27, 16, 30), et(27, 21, 0)) == "after-hours"
+    assert market.label_session(et(27, 8, 0), et(27, 8, 5)) == "pre-market"
+    assert market.label_session(et(27, 15, 55), et(27, 21, 0)) == "close"
+    assert market.label_session(et(27, 11, 0), et(27, 11, 5)) == "live"
+
+    db = DB(tempfile.mkdtemp())
+    db.add_tracked("ACME", "1", "2026-10-27", 22.83, 72, 1.5e6, False)
+    row = db.open_tracked("2026-01-01")[0]
+    db.update_tracked(row["id"], ret5=-0.05, offering_notified=1)
+    r = db.all_tracked()[0]
+    assert r["ret5"] == -0.05 and r["offering_notified"] == 1 and r["ret20"] is None
+
+    rows = parse_form4(filing("Jane CEO", "CEO", 40000, 12.5, 140000))
+    c = screener.group(rows)[0]
+    m = dict(price=22.83, last_close=27.54, session="after-hours", ext_move=-0.171, adv20=9e6,
+             mcap=8e8, ret20=-0.17, ret60=-0.3, pct_of_52w_high=0.5)
+    msg = telegram.format_alert(c, m, 70, ["x"], ["after-hours move -17.1%"])
+    assert "⚠️" in msg and "after-hours" in msg and "27.54" in msg
+
 if __name__ == "__main__":
-    test_pipeline(); print("ok")
+    test_new_features(); print("new features ok")
+    test_offering_excluded(); test_pipeline(); print("ok")
 
 def test_schedule():
     import datetime as dt
