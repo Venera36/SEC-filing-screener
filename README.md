@@ -41,6 +41,37 @@ Market cap choice: $200M–$10B. Below that, liquidity/manipulation risk; above 
   Run `python -m insider_bot.main --report` (e.g. `railway run ...`) for a summary table with average return and win rate.
   Alerts sent before this feature existed are not tracked.
 
+## Extra signals, confluence and the decision log (v2)
+Insider buying stays the anchor. Other signals are modules (`activist.py`, `earnings_drift.py`) that return fired / not fired,
+points and a reason; add your own in `signals.py`. **Default is `SIGNALS_MODE=shadow`: they are scored and logged but change nothing.**
+
+| `SIGNALS_MODE` | Behaviour |
+|---|---|
+| `shadow` (default) | Signals are logged only. Alerts are exactly as before. |
+| `boost` | Fired signals add points; insider-only alerts still go out. |
+| `require` | Alert only if the insider signal **and** at least `MIN_CONFIRMING_SIGNALS` (1) other signal fired. |
+
+- **Activist 13D:** a new *initial* Schedule 13D on the issuer in the last `ACTIVIST_LOOKBACK_DAYS` (amendments and 13G are ignored).
+- **Post-earnings drift:** recent EPS beat >= `DRIFT_MIN_SURPRISE`, price gap >= `DRIFT_MIN_GAP` on heavy volume, gain still held.
+  Uses Yahoo's scraped earnings table; if it fails the signal reports an error and does not fire.
+- **Daily cap:** `MAX_ALERTS_PER_DAY` (default 3, 0 = unlimited). Best-scored candidates get the slots.
+- **Candidate log:** every cluster that passes the insider gate is stored with its status (`alerted`, `below_score`,
+  `confluence_missing`, `rejected_market`, `offering_hold`, `ai_veto`, `capped`), signals and AI output. Forward 5/20/60-day
+  returns are tracked for all of them **against `BENCHMARK` (SPY)**, so `--report` shows whether alerts beat both the market
+  and the candidates you did not alert on. Promote a signal from `shadow` only when this data supports it.
+
+## Optional AI review (`AI_MODE`)
+Off by default. For the few candidates about to alert, a model reads recent 8-K excerpts and returns validated JSON
+(red flags, veto, confidence, summary). Code supplies every number; the model only reads text. `shadow` = log only;
+`veto` = a veto with confidence >= `AI_VETO_MIN_CONF` holds the alert and the summary is shown. Set `LLM_API_KEY`, `LLM_MODEL`
+and (for non-OpenAI providers) `LLM_BASE_URL` to any OpenAI-compatible chat-completions endpoint. Filing text is untrusted input;
+the model's only power is to hold an alert.
+
+## Telegram buttons and commands
+Alerts carry **Approve / Skip** buttons that record your decision (shown in `--report`). They never place orders.
+`/pause` and `/resume` stop and restart new alerts (ingestion and follow-ups continue); `/status` shows state and today's count.
+Only `TELEGRAM_CHAT_ID` is obeyed. Disable with `TELEGRAM_CONTROL=false`. Not started with `--once` or `--dry-run`.
+
 ## Schedule
 By default the bot only polls **Mon-Fri, 05:00-21:00 America/Chicago, skipping US federal holidays** (EDGAR accepts filings 6am-10pm ET = 5am-9pm CT) (handles CST/CDT automatically) and sleeps otherwise.
 On waking it re-scans the SEC daily index, so filings made overnight or over the weekend are still picked up (the SEC
@@ -52,3 +83,6 @@ Note: the Railway service still runs 24/7 (idle while sleeping); the sleep loop 
 - Form 4s are filed up to 2 business days after the trade; the signal is delayed by design.
 - Stake % is approximate (indirect holdings and multi-class shares can skew it).
 - Tune thresholds via env vars (see `.env.example`).
+- Extra-signal and AI results are only as good as their data (Yahoo scrape, EDGAR form labels, the model). Verify them in
+  `shadow` mode before letting them affect alerts. Nothing here is a guarantee of profit; compare against SPY in `--report`.
+- No order execution of any kind (including paper). Alpaca paper tracking is intentionally not included yet.
