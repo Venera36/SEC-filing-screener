@@ -15,14 +15,14 @@ log = logging.getLogger("bot")
 
 def ingest(db, edgar, index_days):
     found = dict(edgar.current_feed())
-    day, checked = dt.date.today(), 0
+    day, checked = schedule.now_local().date(), 0
     while checked <= index_days:                      # daily index covers anything the live feed missed
         if day.weekday() < 5:
             found.update(edgar.daily_form4(day))
             checked += 1
         day -= dt.timedelta(days=1)
     new = {a: p for a, p in found.items() if not db.seen(a)}
-    log.info("%d Form 4 filings found, %d new", len(found), len(new))
+    log.info("%d Form 4 filings found (live feed + daily index), %d new", len(found), len(new))
     kept = 0
     for acc, path in new.items():
         text = edgar.filing_text(path)
@@ -35,7 +35,7 @@ def ingest(db, edgar, index_days):
 
 
 def evaluate(db, dry):
-    since = (dt.date.today() - dt.timedelta(days=C.WINDOW_DAYS)).isoformat()
+    since = (schedule.now_local().date() - dt.timedelta(days=C.WINDOW_DAYS)).isoformat()
     for c in screener.group(db.purchases_since(since)):
         if not c["ticker"] or c["ticker"] == "NONE" or not screener.insider_gate(c):
             continue
