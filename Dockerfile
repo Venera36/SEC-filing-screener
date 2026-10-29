@@ -4,4 +4,4 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD ["python", "-m", "insider_bot.main"]
+CMD ["python", "-m", "sec_filing.main"]

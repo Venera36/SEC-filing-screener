@@ -42,9 +42,11 @@ def handle_update(db, upd):
         telegram.send("▶️ Alerts resumed.")
     elif cmd == "/status":
         start = schedule.now_local().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        telegram.send(f"Alerts: {'PAUSED' if db.get_kv('paused') == '1' else 'active'}\n"
-                      f"Sent today: {db.alerts_since(start)}"
+        telegram.send(f"<b>SEC Filing bot</b>\nAlerts: {'PAUSED' if db.get_kv('paused') == '1' else 'active'}\n"
+                      f"Insider alerts today: {db.alerts_since(start)}"
                       f"{f' / cap {C.MAX_ALERTS_PER_DAY}' if C.MAX_ALERTS_PER_DAY else ''}\n"
+                      f"\n8-K / contract / FDA alerts today: {db.feed_alerts_since(start)}"
+                      f"{f' / cap {C.MAX_EVENT_ALERTS_PER_DAY}' if C.MAX_EVENT_ALERTS_PER_DAY else ''}\n"
                       f"Signals mode: {C.SIGNALS_MODE} · AI mode: {C.AI_MODE}")
 
 

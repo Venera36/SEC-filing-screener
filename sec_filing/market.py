@@ -4,7 +4,10 @@ import logging
 import warnings
 import datetime as dt
 
-warnings.filterwarnings("ignore", module=r"yfinance.*")   # silence pandas deprecation spam
+import yfinance  # noqa: F401  - must be imported BEFORE the filter below: on import yfinance adds its own
+                 # "show DeprecationWarnings from yfinance" rule, which would override ours (the Pandas4Warning spam)
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"yfinance")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"yfinance")
 
 log = logging.getLogger("market")
 _cache = {}

@@ -1,10 +1,10 @@
 import os, sys, json, sqlite3, tempfile, contextlib, datetime as dt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["SEC_USER_AGENT"] = "test test@example.com"
-from insider_bot import config as C, signals, activist, earnings_drift, analysis, control, telegram
-from insider_bot import market, offerings, schedule, main as M
-from insider_bot.db import DB
-from insider_bot.signals import SignalResult
+from sec_filing import config as C, signals, activist, earnings_drift, analysis, control, telegram
+from sec_filing import market, offerings, schedule, main as M
+from sec_filing.db import DB
+from sec_filing.signals import SignalResult
 
 
 @contextlib.contextmanager
@@ -166,7 +166,7 @@ def harness(sig_results, market_data=None):
     sent = []
     saved = (market.get, signals.run_all, offerings.find, telegram.send)
     market.get = lambda t: market_data or M_OK
-    signals.run_all = lambda *a: sig_results
+    signals.run_all = lambda *a, **k: sig_results
     offerings.find = lambda *a: []
     telegram.send = lambda text, buttons=None: sent.append((text, buttons))
     try:
@@ -277,7 +277,7 @@ def test_control():
             control.handle_update(db, msg("/resume"))
             assert db.get_kv("paused") == "0"
             control.handle_update(db, msg("/status"))
-            assert any(k == "send" and "Sent today" in t for k, t in log)
+            assert any(k == "send" and "Insider alerts today" in t for k, t in log)
             before = len(log)
             control.handle_update(db, msg("/pause", chat=555))                         # stranger can't pause
             assert db.get_kv("paused") == "0" and len(log) == before

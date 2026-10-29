@@ -6,7 +6,8 @@ import sys
 import time
 import datetime as dt
 
-from . import analysis, config as C, control, market, offerings, schedule, screener, signals, telegram
+from . import (analysis, config as C, control, event_signal, events, feeds, market, offerings, schedule, screener,
+               signals, telegram)
 from .db import DB
 from .edgar import Edgar
 from .parser import parse_form4
@@ -36,11 +37,11 @@ def ingest(db, edgar, index_days):
     log.info("stored %d open-market purchase rows", kept)
 
 
-def _push(msg, dry, buttons=None):
+def _push(msg, dry, buttons=None, chat_id=None):
     if dry:
         print("\n" + msg + ("\n[buttons: " + " | ".join(t for t, _ in buttons) + "]" if buttons else "") + "\n")
     else:
-        telegram.send(msg, buttons)
+        telegram.send(msg, buttons, chat_id=chat_id) if chat_id else telegram.send(msg, buttons)
 
 
 def _buttons(cand_id):
@@ -74,7 +75,7 @@ def evaluate(db, edgar, dry):
             log.info("%s rejected: %s", c["ticker"], reason)
             _log_cand(db, c, m, "rejected_market", base, base, [], note=reason); continue
 
-        results = signals.run_all(edgar, c, m, today) if base >= C.MIN_SCORE - C.NEAR_MISS_MARGIN else []
+        results = signals.run_all(edgar, c, m, today, db=db) if base >= C.MIN_SCORE - C.NEAR_MISS_MARGIN else []
         comb = signals.combine(base, results, C.SIGNALS_MODE, C.MIN_CONFIRMING_SIGNALS)
         if comb["score"] < C.MIN_SCORE:
             log.info("%s score %s below threshold", c["ticker"], comb["score"])
@@ -96,7 +97,7 @@ def evaluate(db, edgar, dry):
             log.info("%s skipped: daily alert cap (%d) reached", c["ticker"], C.MAX_ALERTS_PER_DAY)
             _log_cand(db, c, m, "capped", f["base"], comb["final"], results); continue
 
-        warns = []
+        warns = event_signal.negative_warnings(db, c, today)
         if m["session"] in ("after-hours", "pre-market") and abs(m["ext_move"]) >= C.EXT_MOVE_WARN:
             warns.append(f"{m['session']} move {m['ext_move']:+.1%} vs last close ${m['last_close']:.2f}")
         offering = []
@@ -124,6 +125,98 @@ def evaluate(db, edgar, dry):
             db.add_tracked(c["ticker"], c["cik"], today.isoformat(), m["price"], comb["score"], c["total"], bool(offering))
         sent_today += 1
         log.info("ALERT %s score=%s total=%.0f warns=%s", c["ticker"], comb["score"], c["total"], warns)
+
+
+# ---------------------------------------------------------------- 8-K, contracts, FDA
+
+def _day_start():
+    return schedule.now_local().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def _room_for_event_alert(db):
+    return not C.MAX_EVENT_ALERTS_PER_DAY or db.feed_alerts_since(_day_start()) < C.MAX_EVENT_ALERTS_PER_DAY
+
+
+def scan_events(db, edgar, dry, index_days):
+    """8-K screening. Runs every cycle; filings already looked at are skipped via the events table."""
+    if not C.EVENTS_ENABLED:
+        return
+    today = schedule.now_local().date()
+    found = events.gather(edgar, today, index_days + 1)          # +1: today's index doesn't exist yet
+    if db.feed_empty("events"):
+        # First run ever: record what already exists without alerting (otherwise days-old 8-Ks would alert)
+        for acc, f in found.items():
+            db.save_event(acc, f["cik"], None, f["company"], f["items"] or [], [], today.isoformat(), "seeded")
+        log.info("8-K: first run, recorded %d existing filings without alerting", len(found))
+        return
+    want = events.alert_tags()
+    for ev in events.process(db, edgar, market.get, found, today):
+        if db.get_kv("paused") == "1":
+            db.mark_feed("events", ev["id"], "paused"); continue
+        if not _room_for_event_alert(db):
+            log.info("%s 8-K skipped: daily event alert cap (%d) reached", ev["ticker"], C.MAX_EVENT_ALERTS_PER_DAY)
+            db.mark_feed("events", ev["id"], "capped"); continue
+        tags = sorted(ev["tags"], key=lambda t: t[0] not in want)      # alert-worthy tags first
+        labels = [(t, events.TAGS[t][0], events.TAGS[t][1], snip) for t, snip in tags]
+        ev["link"] = events.link(ev["cik"], ev["acc"])
+        _push(telegram.format_event(ev, labels, events.insider_context(db, ev["ticker"], today)), dry,
+              chat_id=C.EVENTS_CHAT_ID or None)
+        db.mark_feed("events", ev["id"], "alerted")
+        log.info("8-K ALERT %s %s", ev["ticker"], [t for t, _ in ev["tags"]])
+
+
+def scan_feeds(db, edgar, dry):
+    """Government contracts and FDA approvals, each source on its own polling interval."""
+    today, now = schedule.now_local().date(), time.time()
+    for name in (n.strip() for n in C.FEEDS_ENABLED.split(",")):
+        fn = feeds.SOURCES.get(name)
+        if not fn or not feeds.due(db, name, now):
+            continue
+        db.set_kv(f"feed_last_{name}", now)
+        try:
+            recs = fn(today)
+        except Exception:
+            log.exception("feed %s failed", name); continue
+        if recs and db.feed_empty("awards", name):
+            for r in recs:                     # first run for this source: record the backlog without alerting
+                db.save_award(name, r["key"], r["date"], today.isoformat(), r["company"], None, None, r["agency"],
+                              r["amount"], r["detail"], "seeded")
+            log.info("%s: first run, recorded %d existing records without alerting", name, len(recs))
+            continue
+        for a in feeds.process(db, edgar, market.get, recs, today):
+            status = "alerted"
+            if db.get_kv("paused") == "1":
+                status = "paused"
+            elif not _room_for_event_alert(db):
+                status = "capped"
+                log.info("%s %s skipped: daily event alert cap reached", a["ticker"], name)
+            else:
+                _push(telegram.format_award(a, events.insider_context(db, a["ticker"], today)), dry,
+                      chat_id=C.EVENTS_CHAT_ID or None)
+                log.info("%s ALERT %s $%.0f", name.upper(), a["ticker"], a["total"])
+            for i in a["ids"]:
+                db.mark_feed("awards", i, status if status != "alerted" or i == a["ids"][0] else "logged")
+
+
+def follow_up_feeds(db, dry):
+    """5/20/60-trading-day results for 8-K, contract and FDA alerts (vs benchmark), sent like insider results."""
+    today = schedule.now_local().date()
+    for table in ("events", "awards"):
+        for r in db.open_feed_alerts(table, (today - dt.timedelta(days=100)).isoformat()):
+            if r["last_outcome_check"] == today.isoformat():
+                continue
+            age = (today - dt.date.fromisoformat(r["seen_date"])).days
+            pending = [n for n in (5, 20, 60) if r[f"ret{n}"] is None and age >= int(n * 7 / 5)]
+            fields = {"last_outcome_check": today.isoformat()}
+            if pending:
+                for n, (ret, spy) in market.forward_returns(r["ticker"], r["seen_date"], r["price"], pending,
+                                                            C.BENCHMARK).items():
+                    fields[f"ret{n}"], fields[f"spy{n}"] = ret, spy
+                    kind = "8-K" if table == "events" else {"openfda": "FDA"}.get(r["source"], "contract")
+                    _push(f"📊 <b>${html.escape(r['ticker'])}</b> {kind} alert, {n}-trading-day result: "
+                          f"<b>{ret:+.1%}</b> vs {html.escape(C.BENCHMARK)} {spy:+.1%} "
+                          f"(alert {r['seen_date']} at ${r['price']:.2f})", dry, chat_id=C.EVENTS_CHAT_ID or None)
+            db.update_feed(table, r["id"], **fields)
 
 
 def follow_up(db, edgar, dry):
@@ -213,6 +306,23 @@ def report(db):
     if not cands:
         print("No candidates logged yet.")
 
+    for table, title in (("events", "8-K alerts"), ("awards", "Contract / FDA alerts")):
+        rows = db.all_feed_alerts(table)
+        print(f"\n== {title} ==")
+        if not rows:
+            print("None yet.")
+            continue
+        groups = {}
+        for r in rows:
+            key = (json.loads(r["tags"])[0][0] if r["tags"] != "[]" else "?") if table == "events" else r["source"]
+            groups.setdefault(key, []).append(r)
+        for key, grp in sorted(groups.items()):
+            print(f"[{key}] {len(grp)} alert(s)")
+            for n in (5, 20, 60):
+                line = _stats(grp, n)
+                if line:
+                    print("   " + line)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -232,8 +342,10 @@ def main():
     db, edgar = DB(C.DATA_DIR), Edgar(C.SEC_USER_AGENT)
     if not a.dry_run and not a.once and C.TELEGRAM_CONTROL:
         control.start()
-    log.info("signals mode=%s (%s) · AI mode=%s · alert cap/day=%s", C.SIGNALS_MODE, C.SIGNALS_ENABLED, C.AI_MODE,
-             C.MAX_ALERTS_PER_DAY or "unlimited")
+    log.info("SEC Filing bot · signals mode=%s (%s) · AI mode=%s · insider alert cap/day=%s",
+             C.SIGNALS_MODE, C.SIGNALS_ENABLED, C.AI_MODE, C.MAX_ALERTS_PER_DAY or "unlimited")
+    log.info("8-K screening=%s (alert tags: %s) · feeds=%s · event alert cap/day=%s", C.EVENTS_ENABLED,
+             C.EVENT_ALERT_TAGS, C.FEEDS_ENABLED or "none", C.MAX_EVENT_ALERTS_PER_DAY or "unlimited")
     first = True
     while True:
         if C.ENFORCE_SCHEDULE and not a.once and not schedule.is_active():
@@ -242,15 +354,25 @@ def main():
             time.sleep(min(wait + 5, 3600))
             first = True          # re-scan the daily index after being idle (covers overnight/weekend filings)
             continue
+        backfill = a.backfill if first else 2
         try:
-            ingest(db, edgar, a.backfill if first else 2)
+            ingest(db, edgar, backfill)
             evaluate(db, edgar, a.dry_run)
-            first = False
         except Exception:
-            log.exception("cycle failed")
+            log.exception("insider cycle failed")
+        try:
+            scan_events(db, edgar, a.dry_run, backfill if first else 0)
+        except Exception:
+            log.exception("8-K cycle failed")
+        try:
+            scan_feeds(db, edgar, a.dry_run)
+        except Exception:
+            log.exception("contract/FDA cycle failed")
+        first = False
         try:
             follow_up(db, edgar, a.dry_run)
             follow_up_candidates(db)
+            follow_up_feeds(db, a.dry_run)
         except Exception:
             log.exception("follow-up failed")
         if a.once:

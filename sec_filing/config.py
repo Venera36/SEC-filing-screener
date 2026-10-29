@@ -54,7 +54,7 @@ TRACK_OUTCOMES = _b("TRACK_OUTCOMES", True)
 # boost   = fired signals add points to the score; insider-only alerts still go out
 # require = alert only if the insider signal AND >= MIN_CONFIRMING_SIGNALS other signals fired
 SIGNALS_MODE = _mode("SIGNALS_MODE", "shadow", ("shadow", "boost", "require"))
-SIGNALS_ENABLED = os.getenv("SIGNALS_ENABLED", "activist,earnings_drift")
+SIGNALS_ENABLED = os.getenv("SIGNALS_ENABLED", "activist,earnings_drift,events")
 MIN_CONFIRMING_SIGNALS = _i("MIN_CONFIRMING_SIGNALS", 1)
 NEAR_MISS_MARGIN = _f("NEAR_MISS_MARGIN", 20)      # run signals/log candidates down to MIN_SCORE - margin
 MAX_ALERTS_PER_DAY = _i("MAX_ALERTS_PER_DAY", 3)   # 0 = unlimited
@@ -84,3 +84,39 @@ AI_MAX_DOC_CHARS = _i("AI_MAX_DOC_CHARS", 4000)
 
 # ---- Telegram buttons and /pause /resume /status ------------------------------
 TELEGRAM_CONTROL = _b("TELEGRAM_CONTROL", True)
+
+# ---- 8-K screening ------------------------------------------------------------
+EVENTS_ENABLED = _b("EVENTS_ENABLED", True)
+# Which 8-K findings send their own alert. Available tags: fda_approval, fda_milestone, fda_negative,
+# gov_contract, agreement, acquisition, earnings, exec_change, bankruptcy, non_reliance, dilution, financing.
+# Earnings / financing / dilution are stored (and shown on insider alerts) but don't alert on their own by default:
+# a bare "company reported earnings" 8-K carries no beat/miss information.
+EVENT_ALERT_TAGS = os.getenv("EVENT_ALERT_TAGS",
+                             "fda_approval,fda_milestone,fda_negative,gov_contract,agreement,acquisition,"
+                             "exec_change,bankruptcy,non_reliance")
+EVENT_MIN_PRICE = _f("EVENT_MIN_PRICE", 3)
+EVENT_MIN_ADV_USD = _f("EVENT_MIN_ADV_USD", 2000000)
+EVENT_MIN_MCAP = _f("EVENT_MIN_MCAP", 100000000)
+EVENT_MAX_MCAP = _f("EVENT_MAX_MCAP", 20000000000)     # 0 = no maximum
+EVENT_MAX_DOC_CHARS = _i("EVENT_MAX_DOC_CHARS", 60000)
+EVENTS_LOOKBACK_DAYS = _i("EVENTS_LOOKBACK_DAYS", 30)  # 8-K events shown on / scored for insider alerts
+MAX_EVENT_ALERTS_PER_DAY = _i("MAX_EVENT_ALERTS_PER_DAY", 15)   # 8-K + contract + FDA alerts; 0 = unlimited
+EVENTS_CHAT_ID = os.getenv("EVENTS_CHAT_ID", "").strip()        # blank = same chat as insider alerts
+
+# ---- Government contracts + FDA approvals (non-SEC feeds) -----------------------
+FEEDS_ENABLED = os.getenv("FEEDS_ENABLED", "dod,usaspending,openfda")
+WEB_USER_AGENT = os.getenv("WEB_USER_AGENT", "").strip() or SEC_USER_AGENT
+CONTRACT_MIN_USD = _f("CONTRACT_MIN_USD", 10000000)
+CONTRACT_MIN_PCT_MCAP = _f("CONTRACT_MIN_PCT_MCAP", 0.01)     # award must be >= 1% of market cap to alert
+DOD_CONTRACTS_URL = os.getenv("DOD_CONTRACTS_URL", "https://www.defense.gov/News/Contracts/")
+DOD_MAX_ARTICLES = _i("DOD_MAX_ARTICLES", 3)
+DOD_POLL_MINUTES = _i("DOD_POLL_MINUTES", 60)
+USASPENDING_POLL_MINUTES = _i("USASPENDING_POLL_MINUTES", 360)
+USASPENDING_LOOKBACK_DAYS = _i("USASPENDING_LOOKBACK_DAYS", 7)
+USASPENDING_NEW_AWARD_DAYS = _i("USASPENDING_NEW_AWARD_DAYS", 30)
+FDA_POLL_MINUTES = _i("FDA_POLL_MINUTES", 360)
+FDA_LOOKBACK_DAYS = _i("FDA_LOOKBACK_DAYS", 14)
+FDA_MAX_MCAP = _f("FDA_MAX_MCAP", 50000000000)                # 0 = no maximum
+NAME_MATCH_CUTOFF = _f("NAME_MATCH_CUTOFF", 0.92)
+
+EVENTS_POINTS_CAP = _f("EVENTS_POINTS_CAP", 15)       # max points the 'events' signal adds to an insider alert

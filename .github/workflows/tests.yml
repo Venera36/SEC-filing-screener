@@ -10,3 +10,5 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: python tests/test_smoke.py
+      - run: python tests/test_upgrade.py
+      - run: python tests/test_filings.py

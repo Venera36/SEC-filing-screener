@@ -22,22 +22,23 @@ class SignalResult:
     error: str = ""
 
 
-def _registry():
-    from . import activist, earnings_drift       # imported lazily so tests/tools can import this module cheaply
-    return {"activist": activist.check, "earnings_drift": earnings_drift.check}
+def _registry(db=None):
+    from . import activist, earnings_drift, event_signal   # imported lazily so tests/tools can import this cheaply
+    return {"activist": activist.check, "earnings_drift": earnings_drift.check,
+            "events": lambda edgar, c, m, today: event_signal.check(db, c, today)}
 
 
 _cache = {}
 
 
-def run_all(edgar, c, m, today):
+def run_all(edgar, c, m, today, db=None):
     """Run every enabled signal for a cluster. Results are cached per ticker/day so the 15-minute poll
     loop doesn't re-hit EDGAR and Yahoo for the same candidates."""
     key = (c["ticker"], today.isoformat())
     hit = _cache.get(key)
     if hit and time.time() < hit[0]:
         return hit[1]
-    reg = _registry()
+    reg = _registry(db)
     out = []
     for name in (n.strip() for n in C.SIGNALS_ENABLED.split(",")):
         fn = reg.get(name)

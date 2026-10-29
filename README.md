@@ -1,11 +1,18 @@
-# claude-insider-screener
+# SEC Filing
 
-SEC Form 4 insider-buying screener → Telegram alerts.
+SEC filing screener → Telegram alerts. Four alert types:
 
-Screens SEC EDGAR Form 4 filings for clusters of genuine open-market insider purchases and sends a Telegram alert.
+| Alert | Source | What it catches |
+|---|---|---|
+| 🟢 **Insider buying** | SEC Form 4 | Clusters of genuine open-market insider purchases (the original bot) |
+| 📄 🧬 🏛 🔴 **8-K events** | SEC 8-K | Material agreements, government contracts, FDA news, acquisitions, CEO/CFO changes, bankruptcy, non-reliance on financials |
+| 🏛 **Government contracts** | DoD daily contracts, USAspending | Awards that are large relative to the company's market cap |
+| 🧬 **FDA approvals** | openFDA (Drugs@FDA) | Original NDA/BLA approvals (confirmation feed) |
+
+When two signals line up (insiders buying + a contract, FDA news or 8-K in the same stock), each alert says so.
 **No trading.** Alerts are screening signals, not financial advice.
 
-## How it works
+## Insider buying: how it works
 1. **Ingest** – polls EDGAR's live Form 4 feed + the daily index; parses each filing, keeping only
    transaction code `P` (open-market purchase, acquired). Excludes 10b5-1 plans, option exercises, grants, gifts.
 2. **Cluster** – groups purchases per issuer over `WINDOW_DAYS` (by transaction date); 10%-holder-only buyers are excluded by default.
@@ -23,9 +30,9 @@ Market cap choice: $200M–$10B. Below that, liquidity/manipulation risk; above 
    ```bash
    python -m venv .venv && source .venv/bin/activate
    pip install -r requirements.txt
-   cp .env.example .env && export $(grep -v '^#' .env | xargs)
-   python tests/test_smoke.py
-   python -m insider_bot.main --once --dry-run --backfill 5   # prints alerts, sends nothing
+   cp env.example .env && export $(grep -v '^#' .env | xargs)
+   python tests/test_smoke.py && python tests/test_upgrade.py && python tests/test_filings.py
+   python -m sec_filing.main --once --dry-run --backfill 5   # prints alerts, sends nothing
    ```
 3. Push to GitHub, then on Railway: **New Project → Deploy from GitHub repo**.
 4. Add variables: `SEC_USER_AGENT` (must contain your name + email, SEC requirement), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DATA_DIR=/data`.
@@ -38,7 +45,7 @@ Market cap choice: $200M–$10B. Below that, liquidity/manipulation risk; above 
   since 3 days before the first purchase. `OFFERING_ACTION=flag` (default) sends the alert with a warning; `hold` suppresses it.
 - **Offering watch:** for `OFFERING_WATCH_DAYS` (30) after each alert, a follow-up message is sent if an offering is filed.
 - **Outcome tracking:** each alert's price is stored; 5/20/60 trading days later the result is sent to Telegram.
-  Run `python -m insider_bot.main --report` (e.g. `railway run ...`) for a summary table with average return and win rate.
+  Run `python -m sec_filing.main --report` (e.g. `railway run ...`) for a summary table with average return and win rate.
   Alerts sent before this feature existed are not tracked.
 
 ## Extra signals, confluence and the decision log (v2)
@@ -67,6 +74,46 @@ Off by default. For the few candidates about to alert, a model reads recent 8-K 
 and (for non-OpenAI providers) `LLM_BASE_URL` to any OpenAI-compatible chat-completions endpoint. Filing text is untrusted input;
 the model's only power is to hold an alert.
 
+## 8-K screening
+Every cycle the bot reads EDGAR's live 8-K feed (plus the daily index after waking), keeps listed companies with a
+known ticker, and reads only filings with items worth reading. The filing body and its press-release exhibit (ex-99)
+are scanned with keyword rules; each finding becomes a tag:
+
+| Item | Tag(s) | Alerts by default |
+|---|---|---|
+| 1.01 Material agreement | `gov_contract` (government customer + award words), `agreement`, `dilution` (underwriting / securities purchase / ATM), `financing` (credit facility, notes) | gov_contract, agreement |
+| 1.03 Bankruptcy | `bankruptcy` | yes (any company size) |
+| 2.01 Acquisition / disposal completed | `acquisition` | yes |
+| 2.02 Earnings | `earnings` | no: a bare "we reported earnings" 8-K has no beat/miss data. Stored and shown on insider alerts |
+| 4.02 Non-reliance on past financials | `non_reliance` | yes (any company size) |
+| 5.02 Officer change | `exec_change`, only when the CEO or CFO is named with resign/appoint/depart wording | yes |
+| 7.01 / 8.01 Press release / other events | `fda_approval`, `fda_milestone` (Breakthrough, Fast Track, priority review, PDUFA, filing accepted), `fda_negative` (Complete Response Letter, clinical hold, refusal to file), `gov_contract` | yes |
+
+Choose which tags alert with `EVENT_ALERT_TAGS`. Gates (lighter than the insider gates, since an 8-K often explains
+a move): price >= `EVENT_MIN_PRICE` ($3), ADV20 >= `EVENT_MIN_ADV_USD` ($2M), market cap `EVENT_MIN_MCAP`-`EVENT_MAX_MCAP`
+($100M-$20B). Alerts quote the sentence that triggered the tag; **always read the filing**, keyword rules can misfire.
+
+## Government contracts and FDA approvals
+- **DoD** (`dod`): the Department of Defense posts every award >= $7.5M each business day around 5pm ET.
+  Checked hourly (`DOD_POLL_MINUTES`). Multiple-award contracts (one ceiling shared by many companies) are skipped.
+- **USAspending** (`usaspending`): civilian agencies (NASA, DHS, HHS/BARDA, DOE, VA...). DoD awards are skipped here
+  because DoD reports to USAspending with a 90-day delay. Checked every 6h.
+- **openFDA** (`openfda`): original NDA/BLA approvals (generics and supplements skipped). Drugs@FDA lags by days, so
+  the 8-K scan usually catches an approval first; an approval already alerted from an 8-K isn't sent twice.
+
+Contract and FDA records name a company, not a ticker. Names are matched to the SEC's official ticker list, with an
+alias table for big contractors' subsidiaries (Sikorsky → LMT, Electric Boat → GD...). Approximate matches are labelled
+"verify" on the alert; anything uncertain is not alerted. A contract alerts only if it is >= `CONTRACT_MIN_USD` ($10M)
+**and** >= `CONTRACT_MIN_PCT_MCAP` (1%) of market cap: a $100M award matters to an $800M company, not to Lockheed.
+
+**First run:** each new feed records what already exists without alerting, so you don't get a burst of old news.
+Combined cap for 8-K + contract + FDA alerts: `MAX_EVENT_ALERTS_PER_DAY` (15). Optional separate chat: `EVENTS_CHAT_ID`.
+Every 8-K/contract/FDA alert gets the same 5/20/60-trading-day result follow-ups vs SPY, and `--report` groups them by tag.
+
+**Confluence with insider buying:** 8-K/contract/FDA alerts show any insider buying in the same stock over
+`WINDOW_DAYS`. Insider alerts show negative 8-K news as warnings, and the `events` signal (in `SIGNALS_ENABLED`) adds
+up to `EVENTS_POINTS_CAP` points for positive news, following `SIGNALS_MODE` like the other signals (default `shadow` = logged only).
+
 ## Telegram buttons and commands
 Alerts carry **Approve / Skip** buttons that record your decision (shown in `--report`). They never place orders.
 `/pause` and `/resume` stop and restart new alerts (ingestion and follow-ups continue); `/status` shows state and today's count.
@@ -85,4 +132,10 @@ Note: the Railway service still runs 24/7 (idle while sleeping); the sleep loop 
 - Tune thresholds via env vars (see `.env.example`).
 - Extra-signal and AI results are only as good as their data (Yahoo scrape, EDGAR form labels, the model). Verify them in
   `shadow` mode before letting them affect alerts. Nothing here is a guarantee of profit; compare against SPY in `--report`.
+- 8-K tags come from keyword rules, not a reading of the filing. Expect occasional misfires; the alert quotes the
+  triggering sentence so you can judge quickly.
+- The DoD, USAspending and openFDA parsers depend on those sites' current formats. A source that changes or blocks the
+  bot logs a warning and is skipped; the rest keep running. If defense.gov answers 403, set `WEB_USER_AGENT` to a
+  normal browser user-agent string.
+- No FDA decision (PDUFA) calendar: there is no free official source.
 - No order execution of any kind (including paper). Alpaca paper tracking is intentionally not included yet.

@@ -1,8 +1,8 @@
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["SEC_USER_AGENT"] = "test test@example.com"
-from insider_bot.parser import parse_form4
-from insider_bot import screener
+from sec_filing.parser import parse_form4
+from sec_filing import screener
 
 def filing(name, title, shares, price, after, officer=1):
     return f"""<SEC-DOCUMENT><XML><ownershipDocument>
@@ -45,8 +45,8 @@ def test_offering_excluded():
 
 def test_new_features():
     import tempfile, datetime as dt
-    from insider_bot import offerings, market, telegram
-    from insider_bot.db import DB
+    from sec_filing import offerings, market, telegram
+    from sec_filing.db import DB
 
     class Fake:
         def submissions(self, cik):
@@ -87,7 +87,7 @@ if __name__ == "__main__":
 def test_schedule():
     import datetime as dt
     from zoneinfo import ZoneInfo
-    from insider_bot import schedule
+    from sec_filing import schedule
     tz = ZoneInfo("America/Chicago")
     assert schedule.is_active(dt.datetime(2026, 10, 27, 5, 0, tzinfo=tz))        # Tue 5:00
     assert not schedule.is_active(dt.datetime(2026, 10, 27, 21, 0, tzinfo=tz))   # Tue 21:00
