@@ -92,6 +92,8 @@ are scanned with keyword rules; each finding becomes a tag:
 Choose which tags alert with `EVENT_ALERT_TAGS`. Gates (lighter than the insider gates, since an 8-K often explains
 a move): price >= `EVENT_MIN_PRICE` ($3), ADV20 >= `EVENT_MIN_ADV_USD` ($2M), market cap `EVENT_MIN_MCAP`-`EVENT_MAX_MCAP`
 ($100M-$20B). Agreements and officer changes are judged from their own Item section only, not the press release.
+Every 8-K, contract and FDA alert shows how far the stock has moved since the news (from the last close before it),
+flagged "market already reacted" at >= `EVENT_MOVED_WARN` (10%).
 Alerts quote the sentence that triggered the tag; **always read the filing**, keyword rules can misfire.
 
 ## Government contracts and FDA approvals

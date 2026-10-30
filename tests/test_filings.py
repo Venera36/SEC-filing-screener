@@ -80,7 +80,8 @@ def test_edgar_parsing():
     e._get = lambda url, soft=False: ATOM if "getcurrent" in url else IDX
     f = e.current_8k(pages=1)
     assert f == {"0000111260-00-000012": {"path": "edgar/data/111/0000111260-00-000012.txt", "cik": "111",
-                                        "company": "Acme Defense Systems, Inc.", "items": ["8.01", "9.01"]}}
+                                        "company": "Acme Defense Systems, Inc.", "items": ["8.01", "9.01"],
+                                        "accepted": "2026-10-29T10:01:02-04:00"}}
     d = e.daily_8k(dt.date(2026, 10, 28))
     assert list(d) == ["0000222260-00-000007"] and d["0000222260-00-000007"]["items"] is None
     assert list(e.daily_form4(dt.date(2026, 10, 28))) == ["0000999260-00-000001"]
@@ -278,9 +279,10 @@ def test_event_signal_and_warnings():
 def test_scan_events_seeds_then_alerts():
     db = _fresh_db()
     sent = []
-    saved = (M._push, M.market.get, M.events.gather)
+    saved = (M._push, M.market.get, M.events.gather, M.market.move_since)
     M._push = lambda msg, dry, buttons=None, chat_id=None: sent.append(msg)
     M.market.get = lambda t: M_OK
+    M.market.move_since = lambda tk, when, price: {"move": 0.124, "base": 17.8, "base_date": "2026-10-28"}
     docs = {"b1": {"m.htm": "<p>Acme was awarded a $50 million contract by the U.S. Navy.</p>"}}
     first = {"old": {"cik": "111", "company": "Acme", "items": ["8.01"], "path": ""}}
     try:
@@ -291,9 +293,10 @@ def test_scan_events_seeds_then_alerts():
         M.events.gather = lambda edgar, today, n: dict(first, b1={"cik": "111", "company": "Acme", "items": ["8.01"]})
         M.scan_events(db, e, True, 0)
         assert len(sent) == 1 and "8-K — $ACME" in sent[0]
+        assert "Since the 8-K: <b>+12.4%</b>" in sent[0] and "market already reacted" in sent[0]
         assert db.feed_alerts_since(0) == 1
     finally:
-        M._push, M.market.get, M.events.gather = saved
+        M._push, M.market.get, M.events.gather, M.market.move_since = saved
 
 
 def test_scan_feeds_seed_due_and_cap():
@@ -302,9 +305,10 @@ def test_scan_feeds_seed_due_and_cap():
     rec = lambda k, amt: {"source": "dod", "key": k, "date": "2026-10-28", "company": "Acme Defense Systems, Inc.",
                           "agency": "Army", "amount": amt, "multi": False, "detail": "d", "link": ""}
     batches = [[rec("k0", 5e7)], [rec("k1", 5e7)]]
-    saved = (M._push, M.market.get, dict(feeds.SOURCES), C.FEEDS_ENABLED)
+    saved = (M._push, M.market.get, dict(feeds.SOURCES), C.FEEDS_ENABLED, M.market.move_since)
     M._push = lambda msg, dry, buttons=None, chat_id=None: sent.append(msg)
     M.market.get = lambda t: M_OK
+    M.market.move_since = lambda tk, when, price: {"move": 0.02, "base": 19.6, "base_date": "2026-10-27"}
     feeds.SOURCES["dod"] = lambda today: batches.pop(0)
     C.FEEDS_ENABLED = "dod"
     try:
@@ -315,9 +319,10 @@ def test_scan_feeds_seed_due_and_cap():
         db.set_kv("feed_last_dod", 0)
         M.scan_feeds(db, None, True)
         assert len(sent) == 1 and "GOVERNMENT CONTRACT — $ACME" in sent[0]
+        assert "Since the award: <b>+2.0%</b>" in sent[0] and "already reacted" not in sent[0]
         assert db.c.execute("SELECT status FROM awards WHERE key='k1'").fetchone()[0] == "alerted"
     finally:
-        M._push, M.market.get = saved[0], saved[1]
+        M._push, M.market.get, M.market.move_since = saved[0], saved[1], saved[4]
         feeds.SOURCES.clear(); feeds.SOURCES.update(saved[2]); C.FEEDS_ENABLED = saved[3]
 
 
@@ -385,6 +390,25 @@ def test_agreement_size_gate_and_body_pick():
     assert ("g1", "acme-20261029.htm") in e.calls and not any("index" in n for _, n in e.calls)
     st = {r["accession"]: r["status"] for r in db.c.execute("SELECT * FROM events")}
     assert st["g1"] == "logged"
+
+
+def test_move_since():
+    import pandas as pd
+    from sec_filing import market
+    idx = pd.DatetimeIndex(["2026-10-27", "2026-10-28", "2026-10-29"]).tz_localize("America/New_York")
+    closes = pd.Series([10.0, 11.0, 12.0], index=idx)
+    saved = market._closes
+    market._closes = lambda sym, start: closes
+    try:
+        r = market.move_since("ACME", "2026-10-29T07:15:02-04:00", 13.2)       # pre-market news: base = prior close
+        assert r["base"] == 11.0 and r["base_date"] == "2026-10-28" and abs(r["move"] - 0.2) < 1e-9
+        r = market.move_since("ACME", "2026-10-29T17:30:00-04:00", 13.2)       # after the close: base = that close
+        assert r["base"] == 12.0 and abs(r["move"] - 0.1) < 1e-9
+        assert market.move_since("ACME", "2026-10-29", 13.2)["base"] == 11.0   # date only
+        assert market.move_since("ACME", "2026-10-27", 13.2) is None           # no close before the news
+        assert market.move_since("ACME", "", 13.2) is None
+    finally:
+        market._closes = saved
 
 
 def test_dod_listing_war_gov_relative_links():

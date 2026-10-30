@@ -137,4 +137,5 @@ FDA_LOOKBACK_DAYS = _i("FDA_LOOKBACK_DAYS", 14)
 FDA_MAX_MCAP = _f("FDA_MAX_MCAP", 50000000000)                # 0 = no maximum
 NAME_MATCH_CUTOFF = _f("NAME_MATCH_CUTOFF", 0.92)
 
+EVENT_MOVED_WARN = _f("EVENT_MOVED_WARN", 0.10)   # flag 8-K/contract/FDA alerts if the stock already moved >= 10%
 EVENTS_POINTS_CAP = _f("EVENTS_POINTS_CAP", 15)       # max points the 'events' signal adds to an insider alert

@@ -53,6 +53,16 @@ def _insider_line(ins):
             f"{ins['first']} → {ins['last']})"]
 
 
+def _reaction_line(r, what):
+    """'⏱ Since the 8-K: +12.4% (from $10.20 close on 2026-10-29)' with a warning when the move is already big."""
+    if not r:
+        return []
+    line = f"⏱ Since the {what}: <b>{r['move']:+.1%}</b> (from ${r['base']:.2f} close on {r['base_date']})"
+    if abs(r["move"]) >= C.EVENT_MOVED_WARN:
+        line += " ⚠️ <b>market already reacted</b>"
+    return [line]
+
+
 def format_event(ev, labels, insider=None):
     """8-K alert. labels: [(tag, label, sentiment, snippet)] in priority order."""
     tk, m = html.escape(ev["ticker"]), ev["m"]
@@ -61,6 +71,7 @@ def format_event(ev, labels, insider=None):
             else "🤝" if top == "merger" else "👔" if top == "exec_change" else "📄")
     head = " · ".join(dict.fromkeys(lbl for _, lbl, _, _ in labels))
     lines = [f"{icon} <b>8-K — ${tk}</b> ({html.escape(ev['company'])})", f"<b>{html.escape(head)}</b>"]
+    lines += _reaction_line(ev.get("reaction"), "8-K")
     if ev.get("amount", 0) >= 1e6:
         pct = f" ({ev['amount'] / m['mcap']:.1%} of mkt cap)" if m.get("mcap") else ""
         lines.append(f"Amount mentioned: <b>{_usd(ev['amount'])}</b>{pct}")
@@ -92,6 +103,7 @@ def format_award(a, insider=None):
             lines.append(f"• {html.escape(r['agency'])}: {html.escape(r['detail'][:300])}")
         if a["how"] == "fuzzy":
             lines.append(f"⚠️ Name matched approximately: “{html.escape(a['recs'][0]['company'])}” → ${tk}. Verify.")
+    lines += _reaction_line(a.get("reaction"), "FDA approval" if a["source"] == "openfda" else "award")
     lines += _insider_line(insider)
     links = [f"<a href=\"{html.escape(r['link'])}\">source</a>" for r in a["recs"][:1] if r.get("link")]
     lines += ["", _market_line(m)] + links + ["<i>Screening signal only, not financial advice.</i>"]

@@ -299,7 +299,8 @@ def process(db, edgar, market_get, filings, today):
                            amount=amt, price=m["price"] if m else None)
         if alert:
             out.append({"id": ev, "acc": acc, "cik": f["cik"], "ticker": ticker, "company": f["company"],
-                        "items": items, "tags": tags, "amount": amt, "m": m})
+                        "items": items, "tags": tags, "amount": amt, "m": m,
+                        "when": f.get("accepted") or today.isoformat()})
     log.info("8-K: %d filings checked, %d read, %d to alert", len(filings), scanned, len(out))
     return out
 

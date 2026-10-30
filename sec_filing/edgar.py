@@ -158,7 +158,8 @@ class Edgar:
                 company = re.sub(r"^\S+\s+-\s+|\s+\(\d+\).*$", "", title).strip()
                 items = ITEM_RE.findall(e.findtext(ATOM + "summary") or "")
                 out[acc] = {"path": f"edgar/data/{m.group(1)}/{acc}.txt", "cik": m.group(1),
-                            "company": company, "items": sorted(set(items)) or None}
+                            "company": company, "items": sorted(set(items)) or None,
+                            "accepted": (e.findtext(ATOM + "updated") or "").strip()}
             if n < 100:
                 break
         return out

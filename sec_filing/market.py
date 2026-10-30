@@ -97,6 +97,36 @@ def _closes(sym, start_iso):
     return yf.Ticker(sym.replace(".", "-")).history(start=start_iso, auto_adjust=False)["Close"].dropna()
 
 
+def move_since(ticker, when, price_now):
+    """How far the stock has moved since an event, so alerts show whether the market already reacted.
+
+    when: ISO datetime with offset (EDGAR acceptance time, e.g. 2026-10-30T07:15:02-04:00) or an ISO date.
+    The base is the last close *before* the news: the previous trading day's close if the event came before the
+    4pm ET close, that day's close if it came after. A bare date (time unknown) uses the previous day's close.
+    Returns {'move', 'base', 'base_date'} or None."""
+    from zoneinfo import ZoneInfo
+    if not when or not price_now:
+        return None
+    try:
+        if "T" in when:
+            t = dt.datetime.fromisoformat(when).astimezone(ZoneInfo(ET))
+            day, after_close = t.date(), t.hour >= 16
+        else:
+            day, after_close = dt.date.fromisoformat(when[:10]), False
+        h = _closes(ticker, (day - dt.timedelta(days=12)).isoformat())
+        base = None
+        for ts, close in h.items():
+            d = ts.date() if hasattr(ts, "date") else ts
+            if d < day or (after_close and d == day):
+                base = (d, float(close))
+        if not base or base[1] <= 0:
+            return None
+        return {"move": price_now / base[1] - 1, "base": base[1], "base_date": base[0].isoformat()}
+    except Exception as e:
+        log.info("move-since lookup failed for %s: %s", ticker, e)
+        return None
+
+
 def forward_returns(ticker, start_iso, base_price, ns=(5, 20, 60), bench="SPY"):
     """{n: (stock_return, benchmark_return)} for each n trading days after start_iso that is available.
     Stock return is measured from base_price (the price at alert time); the benchmark from its close on start_iso."""

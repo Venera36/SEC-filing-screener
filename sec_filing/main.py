@@ -159,6 +159,7 @@ def scan_events(db, edgar, dry, index_days):
         tags = sorted(ev["tags"], key=lambda t: t[0] not in want)      # alert-worthy tags first
         labels = [(t, events.TAGS[t][0], events.TAGS[t][1], snip) for t, snip in tags]
         ev["link"] = events.link(ev["cik"], ev["acc"])
+        ev["reaction"] = market.move_since(ev["ticker"], ev["when"], ev["m"]["price"])
         _push(telegram.format_event(ev, labels, events.insider_context(db, ev["ticker"], today)), dry,
               chat_id=C.EVENTS_CHAT_ID or None)
         db.mark_feed("events", ev["id"], "alerted")
@@ -191,6 +192,7 @@ def scan_feeds(db, edgar, dry):
                 status = "capped"
                 log.info("%s %s skipped: daily event alert cap reached", a["ticker"], name)
             else:
+                a["reaction"] = market.move_since(a["ticker"], a["date"], a["m"]["price"])
                 _push(telegram.format_award(a, events.insider_context(db, a["ticker"], today)), dry,
                       chat_id=C.EVENTS_CHAT_ID or None)
                 log.info("%s ALERT %s $%.0f", name.upper(), a["ticker"], a["total"])
