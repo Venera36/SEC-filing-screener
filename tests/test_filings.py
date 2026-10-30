@@ -339,6 +339,54 @@ def test_follow_up_feeds_and_report():
         M._push, M.market.forward_returns = saved
 
 
+def test_live_misfires_2026_10_30():
+    """Sentences from the first live morning that produced wrong alerts, plus the real changes that should alert."""
+    # BCBP: accounting officer reporting to the CFO is not a CFO change
+    bcbp = ("Item 5.02 Departure of Directors or Certain Officers. Finally, Karen Duran has been appointed the "
+            "Company's principal accounting officer reporting to the Company's Chief Financial Officer, in addition to "
+            "her role as Chief Accounting Officer. Item 9.01 Financial Statements and Exhibits.")
+    assert "exec_change" not in tags(["2.02", "5.02", "8.01", "9.01"], bcbp)
+    # CRI: the CEO departure is old news inside the earnings press release, the 5.02 section is about something else
+    body = ("Item 2.02 Results of Operations. See Exhibit 99.1. Item 5.02 Departure of Directors. On October 28, the "
+            "Board approved the 2026 Equity Incentive Plan amendment, which increases the shares reserved for awards.")
+    pr = ("Results exclude costs related to the departure of Michael Casey, the Company's former Chief Executive "
+          "Officer, in the first quarter of fiscal 2025 and costs related to the departure of Douglas C.")
+    assert [t for t, _ in events.classify(["2.02", "5.02", "8.01"], body, pr)] == ["earnings"]
+    # real changes
+    clx = ("Item 5.02. On October 28, 2026, the Board of Directors of The Clorox Company appointed Fabian Garcia to "
+           "serve as the Chief Executive Officer (\"CEO\") of the Company, effective January 5, 2027.")
+    assert "exec_change" in tags(["5.02", "7.01"], clx)
+    assert "exec_change" in tags(["5.02"], "Item 5.02 Transition of Chief Financial Officer. On October 29, 2026, ...")
+    assert "exec_change" in tags(["5.02"], "Item 5.02 Jane Doe notified the Board of her decision to retire as CFO.")
+    assert "exec_change" in tags(["5.02"], "Item 5.02 John Roe, the Company's CEO, will step down on December 31.")
+    # agreements
+    assert tags(["1.01", "7.01"], "Item 1.01 Entry into a Material Definitive Agreement. On October 29, the Company "
+                "entered into an Agreement and Plan of Merger with Rural Bancorp for $69.3 million.") == ["merger"]
+    assert tags(["1.01", "2.03", "3.02"], "Item 1.01 Entry into a Material Definitive Agreement Investment "
+                "Agreement On October 23, 2026, the Company entered into an Investment Agreement.") == ["dilution"]
+    assert tags(["1.01", "2.03"], "Item 1.01 Entry into a Material Definitive Agreement. The Company entered into "
+                "an amendment to its agreement with the lenders.") == ["financing"]
+    assert events.award_amount("The agreement provides for $0.001 par value shares and a $40 million fee.") == 4e7
+    snip = events.classify(["1.01"], "Item 1.01 Entry into a Material Definitive Agreement. ☐ On May 1 the Company "
+                                     "entered into a supply agreement with Globex.")[0][1]
+    assert "entered into a supply agreement" in snip and "Definitive" not in snip and "☐" not in snip
+
+
+def test_agreement_size_gate_and_body_pick():
+    db = _fresh_db()
+    docs = {"g1": {"0001-index-headers.html": "<p>ACCESSION NUMBER: x ITEM INFORMATION: Entry into agreement</p>",
+                   "acme-20261029.htm": "<p>Item 1.01. The Company entered into a supply agreement worth $3 million.</p>"},
+            "g2": {"big.htm": "<p>Item 1.01. The Company entered into a supply agreement worth $50 million.</p>"}}
+    e = FakeEdgar(docs)
+    filings = {"g1": {"cik": "111", "company": "Acme", "items": ["1.01"]},
+               "g2": {"cik": "111", "company": "Acme", "items": ["1.01"]}}
+    out = events.process(db, e, lambda t: dict(M_OK, mcap=8e8), filings, TODAY)
+    assert [o["acc"] for o in out] == ["g2"]                           # $3M of $800M is too small to alert
+    assert ("g1", "acme-20261029.htm") in e.calls and not any("index" in n for _, n in e.calls)
+    st = {r["accession"]: r["status"] for r in db.c.execute("SELECT * FROM events")}
+    assert st["g1"] == "logged"
+
+
 def test_dod_listing_war_gov_relative_links():
     listing = ('<a href="/Newsroom/Contracts/Contract/Article/4300001/">Contracts For Oct. 29, 2026</a>'
                '<a href="/Newsroom/Contracts/Contract/Article/4300001/">dup</a>'

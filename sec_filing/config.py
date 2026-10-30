@@ -105,12 +105,13 @@ TELEGRAM_CONTROL = _b("TELEGRAM_CONTROL", True)
 # ---- 8-K screening ------------------------------------------------------------
 EVENTS_ENABLED = _b("EVENTS_ENABLED", True)
 # Which 8-K findings send their own alert. Available tags: fda_approval, fda_milestone, fda_negative,
-# gov_contract, agreement, acquisition, earnings, exec_change, bankruptcy, non_reliance, dilution, financing.
+# gov_contract, merger, agreement, acquisition, earnings, exec_change, bankruptcy, non_reliance, dilution, financing.
 # Earnings / financing / dilution are stored (and shown on insider alerts) but don't alert on their own by default:
 # a bare "company reported earnings" 8-K carries no beat/miss information.
 EVENT_ALERT_TAGS = os.getenv("EVENT_ALERT_TAGS",
-                             "fda_approval,fda_milestone,fda_negative,gov_contract,agreement,acquisition,"
+                             "fda_approval,fda_milestone,fda_negative,gov_contract,merger,agreement,acquisition,"
                              "exec_change,bankruptcy,non_reliance")
+EVENT_AGREEMENT_MIN_PCT_MCAP = _f("EVENT_AGREEMENT_MIN_PCT_MCAP", 0.01)   # generic agreements: value >= 1% of mkt cap
 EVENT_MIN_PRICE = _f("EVENT_MIN_PRICE", 3)
 EVENT_MIN_ADV_USD = _f("EVENT_MIN_ADV_USD", 2000000)
 EVENT_MIN_MCAP = _f("EVENT_MIN_MCAP", 100000000)

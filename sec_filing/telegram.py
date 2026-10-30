@@ -56,11 +56,12 @@ def _insider_line(ins):
 def format_event(ev, labels, insider=None):
     """8-K alert. labels: [(tag, label, sentiment, snippet)] in priority order."""
     tk, m = html.escape(ev["ticker"]), ev["m"]
-    neg = labels[0][2] == "-"
-    icon = "🔴" if neg else "🧬" if labels[0][0].startswith("fda") else "🏛" if labels[0][0] == "gov_contract" else "📄"
+    top = labels[0][0]
+    icon = ("🔴" if labels[0][2] == "-" else "🧬" if top.startswith("fda") else "🏛" if top == "gov_contract"
+            else "🤝" if top == "merger" else "👔" if top == "exec_change" else "📄")
     head = " · ".join(dict.fromkeys(lbl for _, lbl, _, _ in labels))
     lines = [f"{icon} <b>8-K — ${tk}</b> ({html.escape(ev['company'])})", f"<b>{html.escape(head)}</b>"]
-    if ev.get("amount"):
+    if ev.get("amount", 0) >= 1e6:
         pct = f" ({ev['amount'] / m['mcap']:.1%} of mkt cap)" if m.get("mcap") else ""
         lines.append(f"Amount mentioned: <b>{_usd(ev['amount'])}</b>{pct}")
     lines.append("Items: " + ", ".join(f"{i} {ITEM_NAMES.get(i, '')}".strip() for i in ev["items"]))

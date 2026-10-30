@@ -81,17 +81,18 @@ are scanned with keyword rules; each finding becomes a tag:
 
 | Item | Tag(s) | Alerts by default |
 |---|---|---|
-| 1.01 Material agreement | `gov_contract` (government customer + award words), `agreement`, `dilution` (underwriting / securities purchase / ATM), `financing` (credit facility, notes) | gov_contract, agreement |
+| 1.01 Material agreement | `merger` (merger / acquisition agreement), `gov_contract` (government customer + award words), `dilution` (item 3.02, underwriting, securities purchase, ATM), `financing` (item 2.03, credit facility, notes), `agreement` (anything else) | merger, gov_contract; agreement only if its value is >= `EVENT_AGREEMENT_MIN_PCT_MCAP` (1%) of market cap |
 | 1.03 Bankruptcy | `bankruptcy` | yes (any company size) |
 | 2.01 Acquisition / disposal completed | `acquisition` | yes |
 | 2.02 Earnings | `earnings` | no: a bare "we reported earnings" 8-K has no beat/miss data. Stored and shown on insider alerts |
 | 4.02 Non-reliance on past financials | `non_reliance` | yes (any company size) |
-| 5.02 Officer change | `exec_change`, only when the CEO or CFO is named with resign/appoint/depart wording | yes |
+| 5.02 Officer change | `exec_change`, only when the CEO or CFO is the subject ("resigned as CFO", "appointed to serve as CEO", "transition of CFO") | yes |
 | 7.01 / 8.01 Press release / other events | `fda_approval`, `fda_milestone` (Breakthrough, Fast Track, priority review, PDUFA, filing accepted), `fda_negative` (Complete Response Letter, clinical hold, refusal to file), `gov_contract` | yes |
 
 Choose which tags alert with `EVENT_ALERT_TAGS`. Gates (lighter than the insider gates, since an 8-K often explains
 a move): price >= `EVENT_MIN_PRICE` ($3), ADV20 >= `EVENT_MIN_ADV_USD` ($2M), market cap `EVENT_MIN_MCAP`-`EVENT_MAX_MCAP`
-($100M-$20B). Alerts quote the sentence that triggered the tag; **always read the filing**, keyword rules can misfire.
+($100M-$20B). Agreements and officer changes are judged from their own Item section only, not the press release.
+Alerts quote the sentence that triggered the tag; **always read the filing**, keyword rules can misfire.
 
 ## Government contracts and FDA approvals
 - **DoD** (`dod`): the Department of Defense posts every award >= $7.5M each business day around 5pm ET.
