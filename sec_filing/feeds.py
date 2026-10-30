@@ -39,7 +39,8 @@ def _get(url, **kw):
 
 # ------------------------------------------------------------------ DoD daily contracts
 
-DOD_ARTICLE = re.compile(r"https?://www\.(?:defense|war)\.gov/News/Contracts/Contract/Article/(\d+)/[^\"'<\s]*", re.I)
+# Article links, absolute or relative, on defense.gov or war.gov ("/News/..." before the 2025 rename, "/Newsroom/..." now)
+DOD_ARTICLE = re.compile(r"(?:https?://www\.(?:defense|war)\.gov)?/News(?:room)?/Contracts/Contract/Article/(\d+)/?", re.I)
 P_TAG = re.compile(r"<p[^>]*>(.*?)</p>", re.S | re.I)
 AWARDEE = re.compile(
     r"^(?P<name>[A-Z0-9][^,]{1,120}?(?:,\s*(?:Inc|LLC|L\.L\.C|Corp|Co|Ltd|L\.P|LP|LLP|Corporation|Company|PLC)\.?)?),"
@@ -72,21 +73,27 @@ def dod(today):
     listing = _get(C.DOD_CONTRACTS_URL)
     if not listing:
         return []
+    base = re.match(r"https?://[^/]+", C.DOD_CONTRACTS_URL).group(0)
     ids = []
     for m in DOD_ARTICLE.finditer(listing):
         if m.group(1) not in [i for i, _ in ids]:
-            ids.append((m.group(1), m.group(0)))
+            url = m.group(0) if m.group(0).startswith("http") else base + m.group(0)
+            ids.append((m.group(1), url.rstrip("/") + "/"))
+    if not ids:
+        log.warning("DoD: no contract articles found on %s - the page format may have changed", C.DOD_CONTRACTS_URL)
+        return []
     recs = []
     for art_id, url in ids[:C.DOD_MAX_ARTICLES]:
         page = _get(url)
         if not page:
             continue
-        t = re.search(r"Contracts\s+For\s+([A-Z][a-z]+\.?\s+\d{1,2},\s+\d{4})", page)
+        t = re.search(r"Contracts\s+For\s+([A-Z][a-z]+\.?\s+\d{1,2},\s+\d{4})", page, re.I)
         date = _parse_date(t.group(1)) if t else today.isoformat()
         for n, (agency, company, amt, multi, txt) in enumerate(parse_dod_article(page)):
             recs.append({"source": "dod", "key": f"dod:{art_id}:{n}", "date": date, "company": company,
                          "agency": agency or "DoD", "amount": amt, "multi": multi,
                          "detail": txt[:400], "link": url})
+    log.info("DoD: %d article(s), %d award paragraph(s)", min(len(ids), C.DOD_MAX_ARTICLES), len(recs))
     return recs
 
 

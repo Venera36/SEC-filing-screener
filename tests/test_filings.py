@@ -339,6 +339,36 @@ def test_follow_up_feeds_and_report():
         M._push, M.market.forward_returns = saved
 
 
+def test_dod_listing_war_gov_relative_links():
+    listing = ('<a href="/Newsroom/Contracts/Contract/Article/4300001/">Contracts For Oct. 29, 2026</a>'
+               '<a href="/Newsroom/Contracts/Contract/Article/4300001/">dup</a>'
+               '<a href="https://www.war.gov/Newsroom/Contracts/Contract/Article/4299000/">older</a>')
+    page = ('<h1>Department of War Contracts For Oct. 29, 2026</h1><p>ARMY</p><p>Acme Defense Systems, Inc., '
+            'Huntsville, Alabama, was awarded a $48,500,000 contract for widgets.</p>')
+    seen, saved = [], (feeds._get, C.DOD_CONTRACTS_URL)
+    C.DOD_CONTRACTS_URL = "https://www.war.gov/Newsroom/Contracts/"
+    feeds._get = lambda url, **k: seen.append(url) or (listing if url == C.DOD_CONTRACTS_URL else page)
+    try:
+        recs = feeds.dod(TODAY)
+        assert seen[1:] == ["https://www.war.gov/Newsroom/Contracts/Contract/Article/4300001/",
+                            "https://www.war.gov/Newsroom/Contracts/Contract/Article/4299000/"]
+        assert recs[0]["date"] == "2026-10-29" and recs[0]["amount"] == 48.5e6
+        feeds._get = lambda url, **k: "<html>no links</html>"
+        assert feeds.dod(TODAY) == []
+    finally:
+        feeds._get, C.DOD_CONTRACTS_URL = saved
+
+
+def test_bad_number_setting_falls_back():
+    os.environ.update(X_BAD="X_BAD", X_COMMA="10,000,000", X_SCI="1e7")
+    try:
+        assert C._i("X_BAD", 360) == 360 and C._f("X_COMMA", 0) == 1e7 and C._i("X_SCI", 0) == 10000000
+        assert C._f("X_MISSING", 0.5) == 0.5
+    finally:
+        for k in ("X_BAD", "X_COMMA", "X_SCI"):
+            os.environ.pop(k)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

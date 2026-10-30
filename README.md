@@ -135,7 +135,7 @@ Note: the Railway service still runs 24/7 (idle while sleeping); the sleep loop 
 - 8-K tags come from keyword rules, not a reading of the filing. Expect occasional misfires; the alert quotes the
   triggering sentence so you can judge quickly.
 - The DoD, USAspending and openFDA parsers depend on those sites' current formats. A source that changes or blocks the
-  bot logs a warning and is skipped; the rest keep running. If defense.gov answers 403, set `WEB_USER_AGENT` to a
+  bot logs a warning and is skipped; the rest keep running. If the DoD source answers 403, set `WEB_USER_AGENT` to a
   normal browser user-agent string.
 - No FDA decision (PDUFA) calendar: there is no free official source.
 - No order execution of any kind (including paper). Alpaca paper tracking is intentionally not included yet.
