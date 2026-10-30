@@ -7,6 +7,7 @@ market gates -> alert. Every classified filing is stored, so insider alerts can 
 (and the 'events' signal can add points for them).
 """
 import html
+import json
 import re
 import logging
 import datetime as dt
@@ -294,13 +295,27 @@ def process(db, edgar, market_get, filings, today):
             mcap = m.get("mcap") if m else None
             if not (amt and mcap and amt / mcap >= C.EVENT_AGREEMENT_MIN_PCT_MCAP):
                 alert = []
-        status = "alert" if alert else "logged"
-        ev = db.save_event(acc, f["cik"], ticker, f["company"], items, tags, today.isoformat(), status,
-                           amount=amt, price=m["price"] if m else None)
+        status, note, verdict = ("alert" if alert else "logged"), "", None
+        if alert:
+            from . import event_ai                         # lazy: event_ai imports this module
+            if event_ai.enabled():
+                verdict = event_ai.review(ticker, f["company"], items, tags, body, exhibit,
+                                          m.get("mcap") if m else None, today.isoformat())
+            if verdict and C.EVENT_AI_MODE == "on":
+                ok, tags = event_ai.apply(verdict, tags, want)
+                if ok is False:
+                    alert, status, note = [], "ai_filtered", verdict["summary"]
+                    log.info("%s 8-K held by AI review: %s", ticker, verdict["summary"])
+                else:
+                    alert = [tags[0][0]]
+                    amt = amt or verdict["amount_usd"] or 0.0
+        ev = db.save_event(acc, f["cik"], ticker, f["company"], items, tags, today.isoformat(), status, note,
+                           amount=amt, price=m["price"] if m else None, ai=json.dumps(verdict) if verdict else "")
         if alert:
             out.append({"id": ev, "acc": acc, "cik": f["cik"], "ticker": ticker, "company": f["company"],
                         "items": items, "tags": tags, "amount": amt, "m": m,
-                        "when": f.get("accepted") or today.isoformat()})
+                        "when": f.get("accepted") or today.isoformat(),
+                        "ai": verdict if C.EVENT_AI_MODE == "on" else None})
     log.info("8-K: %d filings checked, %d read, %d to alert", len(filings), scanned, len(out))
     return out
 

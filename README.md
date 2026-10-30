@@ -96,6 +96,15 @@ Every 8-K, contract and FDA alert shows how far the stock has moved since the ne
 flagged "market already reacted" at >= `EVENT_MOVED_WARN` (10%).
 Alerts quote the sentence that triggered the tag; **always read the filing**, keyword rules can misfire.
 
+### AI review of 8-Ks (`EVENT_AI_MODE`)
+Keyword rules are fast but literal. With `EVENT_AI_MODE=on`, every 8-K the rules flag for an alert is also read by a
+model (same `LLM_API_KEY` / `LLM_MODEL` / `LLM_BASE_URL` as the insider AI review; any OpenAI-compatible endpoint).
+It returns what the event really is, whether it is material for this company, the likely direction and a 2-sentence
+summary. A confident (`EVENT_AI_MIN_CONF`, 0.6) "not material" holds the alert (status `ai_filtered`); a confident
+different event type relabels it; the summary replaces the keyword quote on the alert. `shadow` stores the verdict
+without changing alerts. If the API fails, the keyword decision stands. `EVENT_AI_MAX_PER_DAY` (150) caps cost.
+The model only reads text; it never sees prices and cannot place orders.
+
 ## Government contracts and FDA approvals
 - **DoD** (`dod`): the Department of Defense posts every award >= $7.5M each business day around 5pm ET.
   Checked hourly (`DOD_POLL_MINUTES`). Multiple-award contracts (one ceiling shared by many companies) are skipped.

@@ -411,6 +411,76 @@ def test_move_since():
         market._closes = saved
 
 
+def test_event_ai():
+    import sqlite3
+    from sec_filing import event_ai
+    # replies are validated into a fixed shape
+    assert event_ai.normalize("not json") is None
+    v = event_ai.normalize('```json\n{"event_type":"MERGER","material":true,"direction":"up","confidence":"0.9",'
+                           '"amount_usd":"69300000","summary":"Agreed to buy Rural Bancorp for $69.3M."}\n```')
+    assert v["event_type"] == "merger" and v["direction"] == "neutral" and v["confidence"] == 0.9
+    assert v["amount_usd"] == 69.3e6 and v["material"] is True
+    assert event_ai.normalize({"event_type": "rocket", "confidence": 7})["event_type"] == "none"
+    want = events.alert_tags()
+    tg = [("agreement", "q")]
+    mk = lambda **k: dict({"event_type": "merger", "material": True, "direction": "positive", "confidence": 0.9,
+                           "amount_usd": None, "counterparty": "", "summary": "s"}, **k)
+    assert event_ai.apply(mk(), tg, want) == (True, [("merger", ""), ("agreement", "q")])      # relabelled
+    assert event_ai.apply(mk(material=False), tg, want)[0] is False                            # held
+    assert event_ai.apply(mk(material=False, confidence=0.3), tg, want)[0] is True             # unsure -> keywords
+    assert event_ai.apply(None, tg, want) == (None, tg)
+
+    docs = {"z1": {"m.htm": "<p>Item 5.02. Jane Doe resigned as Chief Financial Officer of the Company.</p>"},
+            "z2": {"n.htm": "<p>Item 5.02. Jane Doe resigned as Chief Financial Officer of the Company.</p>"},
+            "z3": {"o.htm": "<p>Item 5.02. Jane Doe resigned as Chief Financial Officer of the Company.</p>"}}
+    f = lambda acc: {acc: {"cik": "111", "company": "Acme", "items": ["5.02"]}}
+    saved = (event_ai._chat, C.EVENT_AI_MODE, C.LLM_API_KEY, C.LLM_MODEL)
+    calls = []
+    C.LLM_API_KEY, C.LLM_MODEL = "k", "m"
+    try:
+        db = _fresh_db()
+        # on: a confident "not material" holds the alert, and the verdict is stored
+        C.EVENT_AI_MODE = "on"
+        event_ai._chat = lambda sys_, user: calls.append(json.loads(user)) or json.dumps(mk(
+            event_type="exec_change", material=False, summary="Interim CFO swap, routine."))
+        assert events.process(db, FakeEdgar(docs), lambda t: M_OK, f("z1"), TODAY) == []
+        row = db.c.execute("SELECT status,note,ai FROM events WHERE accession='z1'").fetchone()
+        assert row[0] == "ai_filtered" and "routine" in row[1] and json.loads(row[2])["material"] is False
+        assert calls[0]["ticker"] == "ACME" and "resigned as Chief Financial Officer" in calls[0]["filing_text"]
+        # on: material -> alert carries the AI summary instead of the keyword quote
+        event_ai._chat = lambda sys_, user: json.dumps(mk(event_type="exec_change", direction="negative",
+                                                          summary="CFO Jane Doe resigned effective immediately."))
+        out = events.process(db, FakeEdgar(docs), lambda t: M_OK, f("z2"), TODAY)
+        assert len(out) == 1 and out[0]["ai"]["direction"] == "negative"
+        labels = [(t, events.TAGS[t][0], events.TAGS[t][1], sn) for t, sn in out[0]["tags"]]
+        msg = telegram.format_event(dict(out[0], link="https://x.test"), labels)
+        assert "🤖 🔴 CFO Jane Doe resigned" in msg and "“" not in msg
+        # API failure -> keyword decision stands
+        def boom(*a):
+            raise RuntimeError("503")
+        event_ai._chat = boom
+        assert len(events.process(db, FakeEdgar(docs), lambda t: M_OK, f("z3"), TODAY)) == 1
+        # shadow: verdict stored, alert unchanged and no AI line
+        C.EVENT_AI_MODE = "shadow"
+        event_ai._chat = lambda sys_, user: json.dumps(mk(material=False))
+        docs["z4"] = docs["z1"]
+        out = events.process(db, FakeEdgar(docs), lambda t: M_OK, f("z4"), TODAY)
+        assert len(out) == 1 and out[0]["ai"] is None
+        assert json.loads(db.c.execute("SELECT ai FROM events WHERE accession='z4'").fetchone()[0])["material"] is False
+    finally:
+        event_ai._chat, C.EVENT_AI_MODE, C.LLM_API_KEY, C.LLM_MODEL = saved
+
+    # an existing database (events table without the ai column) is migrated
+    d = tempfile.mkdtemp()
+    con = sqlite3.connect(os.path.join(d, "insider.db"))
+    con.execute("CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, accession TEXT UNIQUE, cik TEXT, ticker TEXT,"
+                " company TEXT, items TEXT, tags TEXT DEFAULT '[]', seen_date TEXT, status TEXT, note TEXT DEFAULT '',"
+                " amount REAL, price REAL, alerted_at REAL, last_outcome_check TEXT DEFAULT '', ret5 REAL, ret20 REAL,"
+                " ret60 REAL, spy5 REAL, spy20 REAL, spy60 REAL)")
+    con.commit(); con.close()
+    DB(d).save_event("m1", "1", "A", "A", [], [], "2026-10-30", "logged", ai='{"x":1}')
+
+
 def test_dod_listing_war_gov_relative_links():
     listing = ('<a href="/Newsroom/Contracts/Contract/Article/4300001/">Contracts For Oct. 29, 2026</a>'
                '<a href="/Newsroom/Contracts/Contract/Article/4300001/">dup</a>'

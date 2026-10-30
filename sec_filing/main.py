@@ -348,6 +348,11 @@ def main():
              C.SIGNALS_MODE, C.SIGNALS_ENABLED, C.AI_MODE, C.MAX_ALERTS_PER_DAY or "unlimited")
     log.info("8-K screening=%s (alert tags: %s) · feeds=%s · event alert cap/day=%s", C.EVENTS_ENABLED,
              C.EVENT_ALERT_TAGS, C.FEEDS_ENABLED or "none", C.MAX_EVENT_ALERTS_PER_DAY or "unlimited")
+    from . import event_ai
+    if C.EVENT_AI_MODE != "off" and not event_ai.enabled():
+        log.warning("EVENT_AI_MODE=%s but LLM_API_KEY / LLM_MODEL are not set - 8-K AI review is OFF", C.EVENT_AI_MODE)
+    log.info("8-K AI review=%s (model %s, max %s/day)", C.EVENT_AI_MODE if event_ai.enabled() else "off",
+             C.LLM_MODEL or "-", C.EVENT_AI_MAX_PER_DAY or "unlimited")
     first = True
     while True:
         if C.ENFORCE_SCHEDULE and not a.once and not schedule.is_active():

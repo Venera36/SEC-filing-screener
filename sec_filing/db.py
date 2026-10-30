@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS candidates(
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, accession TEXT UNIQUE, cik TEXT, ticker TEXT, company TEXT,
   items TEXT, tags TEXT DEFAULT '[]', seen_date TEXT, status TEXT, note TEXT DEFAULT '', amount REAL, price REAL,
+  ai TEXT DEFAULT '',
   alerted_at REAL, last_outcome_check TEXT DEFAULT '',
   ret5 REAL, ret20 REAL, ret60 REAL, spy5 REAL, spy20 REAL, spy60 REAL);
 CREATE INDEX IF NOT EXISTS ix_e_ticker ON events(ticker, seen_date);
@@ -66,6 +67,9 @@ class DB:
             for col in ("spy5", "spy20", "spy60"):
                 if col not in have:
                     self.c.execute(f"ALTER TABLE tracked ADD COLUMN {col} REAL")
+            ev_cols = {r["name"] for r in self.c.execute("PRAGMA table_info(events)")}
+            if "ai" not in ev_cols:
+                self.c.execute("ALTER TABLE events ADD COLUMN ai TEXT DEFAULT ''")
 
     # ---- key/value (pause flag, Telegram update offset) ----
     def get_kv(self, k, default=None):
@@ -175,13 +179,14 @@ class DB:
     def event_seen(self, acc):
         return self.c.execute("SELECT 1 FROM events WHERE accession=?", (acc,)).fetchone() is not None
 
-    def save_event(self, acc, cik, ticker, company, items, tags, seen_date, status, note="", amount=None, price=None):
+    def save_event(self, acc, cik, ticker, company, items, tags, seen_date, status, note="", amount=None, price=None,
+                   ai=""):
         with self.c:
             cur = self.c.execute(
-                "INSERT OR IGNORE INTO events(accession,cik,ticker,company,items,tags,seen_date,status,note,amount,price)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO events(accession,cik,ticker,company,items,tags,seen_date,status,note,amount,price,"
+                "ai) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (acc, cik, ticker, company, ",".join(items or []), json.dumps(list(tags or [])), seen_date, status,
-                 note, amount, price))
+                 note, amount, price, ai))
             return cur.lastrowid
 
     def recent_events(self, ticker=None, cik=None, since_iso=""):

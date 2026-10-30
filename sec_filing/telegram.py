@@ -72,11 +72,15 @@ def format_event(ev, labels, insider=None):
     head = " · ".join(dict.fromkeys(lbl for _, lbl, _, _ in labels))
     lines = [f"{icon} <b>8-K — ${tk}</b> ({html.escape(ev['company'])})", f"<b>{html.escape(head)}</b>"]
     lines += _reaction_line(ev.get("reaction"), "8-K")
+    ai = ev.get("ai")
+    if ai and ai.get("summary"):
+        arrow = {"positive": "🟢", "negative": "🔴", "mixed": "🟡"}.get(ai["direction"], "⚪")
+        lines.append(f"🤖 {arrow} {html.escape(ai['summary'])} <i>(AI, {ai['confidence']:.0%} confident - verify)</i>")
     if ev.get("amount", 0) >= 1e6:
         pct = f" ({ev['amount'] / m['mcap']:.1%} of mkt cap)" if m.get("mcap") else ""
         lines.append(f"Amount mentioned: <b>{_usd(ev['amount'])}</b>{pct}")
     lines.append("Items: " + ", ".join(f"{i} {ITEM_NAMES.get(i, '')}".strip() for i in ev["items"]))
-    for _, lbl, _, snip in labels[:2]:
+    for _, lbl, _, snip in ([] if ai and ai.get("summary") else labels[:2]):
         if snip:
             lines.append(f"<i>“{html.escape(snip[:280])}”</i>")
     lines += _insider_line(insider)

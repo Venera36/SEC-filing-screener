@@ -137,5 +137,10 @@ FDA_LOOKBACK_DAYS = _i("FDA_LOOKBACK_DAYS", 14)
 FDA_MAX_MCAP = _f("FDA_MAX_MCAP", 50000000000)                # 0 = no maximum
 NAME_MATCH_CUTOFF = _f("NAME_MATCH_CUTOFF", 0.92)
 
+# AI review of flagged 8-Ks (uses LLM_API_KEY / LLM_MODEL / LLM_BASE_URL). off | shadow (store only) | on
+EVENT_AI_MODE = _mode("EVENT_AI_MODE", "off", ("off", "shadow", "on"))
+EVENT_AI_MIN_CONF = _f("EVENT_AI_MIN_CONF", 0.6)      # below this the keyword decision stands
+EVENT_AI_MAX_PER_DAY = _i("EVENT_AI_MAX_PER_DAY", 150) # cost guard; 0 = unlimited
+EVENT_AI_MAX_CHARS = _i("EVENT_AI_MAX_CHARS", 12000)   # filing text sent per 8-K
 EVENT_MOVED_WARN = _f("EVENT_MOVED_WARN", 0.10)   # flag 8-K/contract/FDA alerts if the stock already moved >= 10%
 EVENTS_POINTS_CAP = _f("EVENTS_POINTS_CAP", 15)       # max points the 'events' signal adds to an insider alert
