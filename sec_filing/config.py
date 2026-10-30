@@ -1,8 +1,25 @@
 import os
 
 
-def _f(n, d): return float(os.getenv(n, d))
-def _i(n, d): return int(os.getenv(n, d))
+import logging
+
+
+def _num(n, d, cast):
+    """A setting with a bad value (e.g. the variable's name pasted as its value) falls back to the default
+    with a warning, instead of crashing the bot on startup."""
+    raw = os.getenv(n, "")
+    if not raw.strip():
+        return cast(d)
+    try:
+        v = float(raw.strip().replace("_", "").replace(",", ""))     # accepts 10000000, 10,000,000, 1e7
+        return int(v) if cast is int else v
+    except ValueError:
+        logging.getLogger("config").warning("%s=%r is not a number - using the default %s", n, raw, d)
+        return cast(d)
+
+
+def _f(n, d): return _num(n, d, float)
+def _i(n, d): return _num(n, d, int)
 def _b(n, d): return os.getenv(n, str(d)).strip().lower() in ("1", "true", "yes")
 
 
@@ -108,7 +125,7 @@ FEEDS_ENABLED = os.getenv("FEEDS_ENABLED", "dod,usaspending,openfda")
 WEB_USER_AGENT = os.getenv("WEB_USER_AGENT", "").strip() or SEC_USER_AGENT
 CONTRACT_MIN_USD = _f("CONTRACT_MIN_USD", 10000000)
 CONTRACT_MIN_PCT_MCAP = _f("CONTRACT_MIN_PCT_MCAP", 0.01)     # award must be >= 1% of market cap to alert
-DOD_CONTRACTS_URL = os.getenv("DOD_CONTRACTS_URL", "https://www.defense.gov/News/Contracts/")
+DOD_CONTRACTS_URL = os.getenv("DOD_CONTRACTS_URL", "https://www.war.gov/Newsroom/Contracts/")
 DOD_MAX_ARTICLES = _i("DOD_MAX_ARTICLES", 3)
 DOD_POLL_MINUTES = _i("DOD_POLL_MINUTES", 60)
 USASPENDING_POLL_MINUTES = _i("USASPENDING_POLL_MINUTES", 360)
