@@ -24,8 +24,14 @@ def _b(n, d): return os.getenv(n, str(d)).strip().lower() in ("1", "true", "yes"
 
 
 def _mode(n, d, allowed):
-    v = os.getenv(n, d).strip().lower()
-    return v if v in allowed else d
+    v = os.getenv(n, "").strip().strip("'\"").strip().lower()
+    if not v:
+        return d
+    if v not in allowed:
+        logging.getLogger("config").warning("%s=%r is not one of %s - using the default %r",
+                                            n, os.getenv(n), "/".join(allowed), d)
+        return d
+    return v
 
 
 SEC_USER_AGENT = os.getenv("SEC_USER_AGENT", "").strip()
