@@ -90,7 +90,7 @@ DRIFT_MIN_VOL_RATIO = _f("DRIFT_MIN_VOL_RATIO", 1.5)   # reaction-day volume vs 
 # ---- Optional LLM review of finalists ------------------------------------------
 # off = disabled (default) | shadow = run and log only | veto = a confident red-flag veto holds the alert
 AI_MODE = _mode("AI_MODE", "off", ("off", "shadow", "veto"))
-LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
+LLM_API_KEY = (os.getenv("LLM_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")).strip()   # either name works
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").strip()   # any OpenAI-compatible endpoint
 LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
 LLM_TEMPERATURE = os.getenv("LLM_TEMPERATURE", "").strip()      # blank = omit (some models reject it)
