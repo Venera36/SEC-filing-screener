@@ -1,3 +1,4 @@
+
 """8-K screening: material agreements, government contracts, FDA news, acquisitions, bankruptcies,
 non-reliance on financials, CEO/CFO changes and earnings.
 
@@ -24,16 +25,18 @@ TAGS = {
     "fda_milestone":  ("FDA milestone", "+", 6),
     "fda_negative":   ("FDA setback", "-", 0),
     "gov_contract":   ("Government contract", "+", 10),
+    "merger":         ("Merger / acquisition agreement", "", 5),
     "agreement":      ("Material agreement", "+", 5),
     "acquisition":    ("Acquisition / disposal completed", "", 3),
     "earnings":       ("Earnings release", "", 0),
-    "exec_change":    ("CEO/CFO change", "-", 0),
+    "exec_change":    ("CEO/CFO change", "", 0),
     "bankruptcy":     ("Bankruptcy / receivership", "-", 0),
     "non_reliance":   ("Past financials can't be relied on", "-", 0),
     "dilution":       ("Equity financing / dilution", "-", 0),
     "financing":      ("Debt / credit agreement", "", 0),
 }
-NEGATIVE = {t for t, v in TAGS.items() if v[1] == "-"}
+# Tags shown as warnings on insider alerts (a CEO/CFO change isn't bad news, but it matters next to insider buying)
+NEGATIVE = {t for t, v in TAGS.items() if v[1] == "-"} | {"exec_change"}
 
 FDA = r"(?:FDA|Food\s+and\s+Drug\s+Administration)"
 FDA_NEG = re.compile(r"complete\s+response\s+letter|\bCRL\b|clinical\s+hold|refus\w*\s+to\s+file|"
@@ -59,10 +62,28 @@ DILUTION = re.compile(r"underwriting\s+agreement|securities\s+purchase\s+agreeme
                       r"public\s+offering|pre-funded\s+warrants", re.I)
 FINANCING = re.compile(r"credit\s+agreement|credit\s+facility|loan\s+agreement|indenture|senior\s+(?:secured\s+)?notes|"
                        r"term\s+loan|revolving|note\s+purchase\s+agreement|convertible\s+notes", re.I)
-EXEC = re.compile(r"chief\s+executive\s+officer|chief\s+financial\s+officer|\bCEO\b|\bCFO\b", re.I)
-EXEC_MOVE = re.compile(r"resign|retire|terminat|depart|step(?:ped|ping)?\s+down|separat|succeed|appoint|"
-                       r"leave\s+of\s+absence|transition", re.I)
+ROLE = (r"(?:the\s+|its\s+|our\s+)?(?:Company['’]s\s+)?(?:new\s+|interim\s+|incoming\s+|permanent\s+)?"
+        r"(?:President\s+and\s+)?(?:Chief\s+Executive\s+Officer|Chief\s+Financial\s+Officer|Principal\s+Executive\s+"
+        r"Officer|Principal\s+Financial\s+Officer|CEO|CFO)\b")
+# The CEO/CFO must be the subject of the change, e.g. "resigned as CFO", "appointed ... to serve as CEO",
+# "Transition of Chief Financial Officer" - not just mentioned near a word like "appointed".
+EXEC_EVENT = re.compile(
+    r"\b(?:resign|retire|step(?:ped|ping|s)?\s+down|depart|terminat|separat|leav)\w*[^.]{0,80}?\b(?:as|from\s+(?:the\s+)?"
+    r"(?:position|role|office)s?\s+of|from\s+(?:his|her|their)\s+(?:position|role)s?\s+as)\s+" + ROLE + "|"
+    r"\b(?:appoint|elect|nam|promot|hir|select)\w*[^.]{0,120}?\b(?:as|to\s+serve\s+as|to\s+(?:the\s+)?(?:position|role|"
+    r"office)\s+of|to\s+succeed[^.]{0,60}?\s+as)\s+" + ROLE + "|"
+    r"\b(?:transition|succession|departure|retirement|resignation|termination)\s+of\s+" + ROLE + "|"
+    + ROLE + r"[^.]{0,80}?\b(?:will|has\s+decided\s+to|intends\s+to|plans\s+to|notified[^.]{0,40}?of\s+(?:his|her|"
+    r"their)\s+(?:intention|decision)\s+to|announced\s+(?:his|her|their)\s+(?:intention|decision)\s+to)\s+"
+    r"(?:resign|retire|step\s+down|depart|leave)", re.I)
+MERGER = re.compile(r"agreement\s+and\s+plan\s+of\s+(?:merger|reorganization)|merger\s+agreement|plan\s+of\s+merger|"
+                    r"business\s+combination\s+agreement|arrangement\s+agreement|definitive\s+agreement\s+to\s+(?:acquire|"
+                    r"be\s+acquired|merge|sell)|(?:share|stock|equity|membership\s+interest|asset)\s+purchase\s+agreement"
+                    r"[^.]{0,200}\bacqui", re.I)
+ENTERED = re.compile(r"entered\s+into[^.]{0,250}", re.I)
 EXHIBIT = re.compile(r"ex-?\d|_ex\d|exhibit|ex\d{2}", re.I)
+EX99 = re.compile(r"ex(?:hibit)?[-_]?99", re.I)
+ITEM_HEAD = re.compile(r"Item\s*(\d\.\d{2})", re.I)
 USD = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)\s*(billion|million|thousand)?", re.I)
 
 
@@ -84,7 +105,7 @@ def award_amount(text):
     best = 0.0
     for sent in re.split(r"(?<=[.;])\s+", text or ""):
         if "$" in sent and (AWARD.search(sent) or re.search(r"agreement|value|worth", sent, re.I)):
-            best = max([best] + amounts(sent))
+            best = max([best] + [a for a in amounts(sent) if a >= 1e6])   # skip par values like $0.001
     return best
 
 
@@ -96,17 +117,35 @@ def snippet(text, rx, width=260):
     a = max(text.rfind(". ", 0, m.start()) + 2, m.start() - width // 2, 0)
     b = text.find(". ", m.end())
     b = min(b + 1 if b != -1 else len(text), a + width)
-    return text[a:b].strip()
+    return text[a:b].replace("☐", "").replace("☒", "").strip()
 
 
-def classify(items, text):
-    """Pure function: (item numbers, cleaned filing text) -> [(tag, snippet)] in priority order."""
+def section(body, item):
+    """Text of one Item in the 8-K body ("Item 5.02 ... " up to the next Item heading). The longest occurrence wins,
+    which skips one-line mentions. Falls back to the whole body if the heading isn't found."""
+    heads = list(ITEM_HEAD.finditer(body or ""))
+    best = ""
+    for i, h in enumerate(heads):
+        if h.group(1) != item:
+            continue
+        end = next((x.start() for x in heads[i + 1:] if x.group(1) != item), len(body))
+        if end - h.start() > len(best):
+            best = body[h.start():end]
+    return best if len(best) > 60 else body
+
+
+def classify(items, body, exhibit=""):
+    """Pure function: (item numbers, cleaned 8-K body, cleaned press-release exhibit) -> [(tag, snippet)].
+    FDA and government-contract news is looked for in the body and the press release. Agreements and CEO/CFO
+    changes are judged only from their own Item section of the body: earnings press releases quote the CEO and
+    mention old departures, which caused false CEO/CFO-change alerts."""
     items = set(items or [])
+    text = (body + " " + exhibit).strip()
     tags = []
 
-    def add(tag, rx):
+    def add(tag, rx, src=None):
         if tag not in (t for t, _ in tags):
-            tags.append((tag, snippet(text, rx) if rx else ""))
+            tags.append((tag, snippet(src if src is not None else text, rx) if rx else ""))
 
     if "1.03" in items:
         add("bankruptcy", re.compile(r"bankruptcy|chapter\s+1[15]|receiver", re.I))
@@ -127,18 +166,24 @@ def classify(items, text):
         add("gov_contract", gov_rx)
 
     if "1.01" in items:
-        head = text[:4000]
-        if DILUTION.search(head):
-            add("dilution", DILUTION)
-        elif FINANCING.search(head) and not any(t == "gov_contract" for t, _ in tags):
-            add("financing", FINANCING)
-        elif not any(t == "gov_contract" for t, _ in tags):
-            add("agreement", re.compile(r"entered\s+into[^.]{0,200}agreement|agreement", re.I))
+        sec = section(body, "1.01")
+        has_gov = any(t == "gov_contract" for t, _ in tags)
+        if MERGER.search(sec):
+            add("merger", MERGER, sec)
+        elif "3.02" in items or DILUTION.search(sec):
+            add("dilution", ENTERED if ENTERED.search(sec) else DILUTION, sec)
+        elif "2.03" in items or FINANCING.search(sec):
+            if not has_gov:
+                add("financing", ENTERED if ENTERED.search(sec) else FINANCING, sec)
+        elif not has_gov:
+            add("agreement", ENTERED, sec)
     if "2.01" in items:
-        add("acquisition", re.compile(r"complet\w*[^.]{0,120}(?:acquisition|merger|sale|disposition)", re.I))
-    if "5.02" in items and EXEC.search(text) and EXEC_MOVE.search(text):
-        add("exec_change", re.compile(r"(?:" + EXEC.pattern + r")[^.]{0,150}(?:" + EXEC_MOVE.pattern + ")|(?:"
-                                      + EXEC_MOVE.pattern + r")[^.]{0,150}(?:" + EXEC.pattern + ")", re.I))
+        add("acquisition", re.compile(r"complet\w*[^.]{0,120}(?:acquisition|merger|sale|disposition)", re.I),
+            section(body, "2.01"))
+    if "5.02" in items:
+        sec = section(body, "5.02")
+        if EXEC_EVENT.search(sec):
+            add("exec_change", EXEC_EVENT, sec)
     if "2.02" in items:
         add("earnings", None)
     return tags
@@ -162,20 +207,30 @@ def _items_from_submissions(edgar, cik, acc):
 
 
 def filing_text(edgar, cik, acc, items, primary_doc=""):
-    """Cleaned text of the 8-K body, plus the press-release exhibit (ex-99) where FDA/contract news usually is."""
-    names_ = [f.get("name", "") for f in edgar.filing_index(cik, acc)]
+    """(8-K body, press-release exhibit ex-99) as cleaned text. The body is the largest non-exhibit HTML file,
+    skipping EDGAR's index / header pages (those were being read instead of the filing)."""
+    files = edgar.filing_index(cik, acc)
     if not primary_doc:
-        body = [n for n in names_ if n.lower().endswith((".htm", ".html")) and not EXHIBIT.search(n)
-                and not n.endswith("-index.htm") and not re.match(r"R\d+\.htm", n)]
-        primary_doc = body[0] if body else ""
-    parts = []
-    if primary_doc:
-        parts.append(clean_text(edgar.document(cik, acc, primary_doc) or "", C.EVENT_MAX_DOC_CHARS))
+        body = [f for f in files if f.get("name", "").lower().endswith((".htm", ".html"))
+                and not EXHIBIT.search(f["name"]) and "index" not in f["name"].lower()
+                and not re.match(r"R\d+\.htm", f["name"])]
+        body.sort(key=lambda f: -_size(f))
+        primary_doc = body[0]["name"] if body else ""
+    main = clean_text(edgar.document(cik, acc, primary_doc) or "", C.EVENT_MAX_DOC_CHARS) if primary_doc else ""
+    exhibit = ""
     if set(items) & {"7.01", "8.01", "2.02", "1.01"}:
-        ex = [n for n in names_ if re.search(r"ex[-_]?99", n, re.I) and n.lower().endswith((".htm", ".html", ".txt"))]
+        ex = [f["name"] for f in files if EX99.search(f.get("name", ""))
+              and f["name"].lower().endswith((".htm", ".html", ".txt"))]
         if ex:
-            parts.append(clean_text(edgar.document(cik, acc, ex[0]) or "", C.EVENT_MAX_DOC_CHARS))
-    return " ".join(p for p in parts if p)
+            exhibit = clean_text(edgar.document(cik, acc, sorted(ex)[0]) or "", C.EVENT_MAX_DOC_CHARS)
+    return main, exhibit
+
+
+def _size(f):
+    try:
+        return int(f.get("size") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def gather(edgar, today, index_days):
@@ -223,13 +278,23 @@ def process(db, edgar, market_get, filings, today):
         if reason:
             db.save_event(acc, f["cik"], ticker, f["company"], items, [], today.isoformat(), "rejected_market", reason)
             continue
-        text = filing_text(edgar, f["cik"], acc, items, doc)
-        if not text:
+        body, exhibit = filing_text(edgar, f["cik"], acc, items, doc)
+        if not body and not exhibit:
             continue                                       # retry next cycle
         scanned += 1
-        tags = classify(items, text)
-        amt = award_amount(text) if any(t in ("gov_contract", "agreement") for t, _ in tags) else 0.0
+        tags = classify(items, body, exhibit)
+        tset = {t for t, _ in tags}
+        amt = 0.0
+        if "gov_contract" in tset:
+            amt = award_amount(body + " " + exhibit)
+        elif tset & {"merger", "agreement"}:
+            amt = award_amount(section(body, "1.01"))
         alert = [t for t, _ in tags if t in want]
+        if alert == ["agreement"] or (alert and set(alert) <= {"agreement", "earnings"}):
+            # a generic agreement alerts only if its value is material to the company
+            mcap = m.get("mcap") if m else None
+            if not (amt and mcap and amt / mcap >= C.EVENT_AGREEMENT_MIN_PCT_MCAP):
+                alert = []
         status = "alert" if alert else "logged"
         ev = db.save_event(acc, f["cik"], ticker, f["company"], items, tags, today.isoformat(), status,
                            amount=amt, price=m["price"] if m else None)
