@@ -43,6 +43,8 @@ def _fetch(ticker):
     try:
         tk = yf.Ticker(sym)
         h = tk.history(period="1y", auto_adjust=False)
+        if h is not None:
+            h = h.dropna(subset=["Close"])     # Yahoo sometimes adds an empty row for today ("last close $nan")
         if h is None or len(h) < 65:
             return None
         close, vol = h["Close"], h["Volume"]
