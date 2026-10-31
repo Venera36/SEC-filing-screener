@@ -19,6 +19,8 @@ def format_alert(c, m, score, why, warns=(), signals=(), ai=None):
     mcap = f"${m['mcap']/1e9:.2f}B" if m["mcap"] else "n/a"
     sess = m.get("session", "close")
     price_note = f"{sess}; last close ${m['last_close']:.2f}" if sess in ("after-hours", "pre-market") else sess
+    if m.get("src"):
+        price_note += f" · {m['src'].split(' price')[0]}"
     lines += ["",
               f"Price ${m['price']:.2f} ({price_note}) · insider avg ${c['avg_price']:.2f}",
               f"20d {m['ret20']:+.0%} · 60d {m['ret60']:+.0%} · ADV20 {_usd(m['adv20'])} · Mkt cap {mcap}",

@@ -138,7 +138,9 @@ accepts Form 4s until 10pm ET). Change via `SCHEDULE_TZ`, `ACTIVE_START`, `ACTIV
 Note: the Railway service still runs 24/7 (idle while sleeping); the sleep loop uses negligible CPU.
 
 ## Known limitations
-- Market data uses `yfinance` (free, unofficial, can break/rate-limit). Swap `market.py` for Polygon/Tiingo/FMP for production.
+- Market data: set `ALPACA_API_KEY_ID`/`ALPACA_API_SECRET_KEY` for real-time current prices (free IEX feed) and `FMP_API_KEY`
+  for daily history and market cap. Anything not configured, or failing, falls back to `yfinance` (free, unofficial).
+  The startup log shows which source is used for what; alerts show where the current price came from.
 - Form 4s are filed up to 2 business days after the trade; the signal is delayed by design.
 - Stake % is approximate (indirect holdings and multi-class shares can skew it).
 - Tune thresholds via env vars (see `.env.example`).

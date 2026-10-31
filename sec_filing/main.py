@@ -351,6 +351,8 @@ def main():
     from . import event_ai
     if C.EVENT_AI_MODE != "off" and not event_ai.enabled():
         log.warning("EVENT_AI_MODE=%s but LLM_API_KEY / LLM_MODEL are not set - 8-K AI review is OFF", C.EVENT_AI_MODE)
+    from . import prices
+    log.info("market data: %s", prices.describe())
     log.info("8-K AI review=%s (model %s, max %s/day)", C.EVENT_AI_MODE if event_ai.enabled() else "off",
              C.LLM_MODEL or "-", C.EVENT_AI_MAX_PER_DAY or "unlimited")
     first = True

@@ -481,6 +481,107 @@ def test_event_ai():
     DB(d).save_event("m1", "1", "A", "A", [], [], "2026-10-30", "logged", ai='{"x":1}')
 
 
+def test_price_sources():
+    import sys as _sys, types, logging
+    import pandas as pd
+    from zoneinfo import ZoneInfo
+    from sec_filing import prices, market
+    ET = ZoneInfo("America/New_York")
+    # timestamps: Alpaca sends nanoseconds + Z
+    assert prices.parse_ts("2026-10-30T19:59:59.875519744Z").microsecond == 875519
+    assert prices.parse_ts("bad") is None
+
+    # staleness: open market needs a recent trade; closed market accepts anything since the last close
+    open_now = dt.datetime(2026, 10, 30, 11, 0, tzinfo=ET)
+    assert market.is_fresh(open_now - dt.timedelta(minutes=10), open_now, dt.date(2026, 10, 29))
+    assert not market.is_fresh(open_now - dt.timedelta(hours=2), open_now, dt.date(2026, 10, 29))
+    night = dt.datetime(2026, 10, 30, 23, 0, tzinfo=ET)
+    assert market.is_fresh(dt.datetime(2026, 10, 30, 19, 55, tzinfo=ET), night, dt.date(2026, 10, 30))
+    assert not market.is_fresh(dt.datetime(2026, 10, 29, 19, 55, tzinfo=ET), night, dt.date(2026, 10, 30))
+    premkt = dt.datetime(2026, 10, 30, 8, 0, tzinfo=ET)
+    assert market.is_fresh(dt.datetime(2026, 10, 30, 7, 30, tzinfo=ET), premkt, dt.date(2026, 10, 29))
+
+    today = dt.datetime.now(ET).date()
+    days = pd.bdate_range(end=today - dt.timedelta(days=3), periods=90)
+    hist = [{"date": d.strftime("%Y-%m-%d"), "close": 10 + i * 0.05, "volume": 600000} for i, d in enumerate(days)]
+
+    class R:
+        def __init__(self, code, body):
+            self.status_code, self._b = code, body
+        def json(self):
+            return self._b
+    calls, routes = [], {}
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append((url, dict(params or {}), dict(headers or {})))
+        for k, v in routes.items():
+            if k in url:
+                return v
+        return R(404, {})
+
+    class YT:                                   # Yahoo stand-in: history fallback + no intraday + market cap
+        def __init__(self, s):
+            pass
+        def history(self, period=None, interval=None, start=None, prepost=False, auto_adjust=False):
+            if interval:
+                raise RuntimeError("no intraday")
+            idx = pd.bdate_range(end=today - dt.timedelta(days=1), periods=80, tz="America/New_York")
+            return pd.DataFrame({"Close": [20.0] * 80, "Volume": [1e6] * 80}, index=idx)
+        fast_info = {"market_cap": 1.5e9}
+
+    saved = (prices._s.get, C.ALPACA_API_KEY_ID, C.ALPACA_API_SECRET_KEY, C.FMP_API_KEY, _sys.modules.get("yfinance"),
+             dict(market._cache))
+    prices._s.get = fake_get
+    _sys.modules["yfinance"] = types.SimpleNamespace(Ticker=YT)
+    market._cache.clear()
+    try:
+        # 1) FMP history (stable list format) + FMP market cap + Alpaca day bar newer than the history
+        C.ALPACA_API_KEY_ID, C.ALPACA_API_SECRET_KEY, C.FMP_API_KEY = "kid", "sec", "fk"
+        routes.update({
+            "historical-price-eod/full": R(200, hist),
+            "/quote": R(200, [{"symbol": "ACME", "price": 14.9, "marketCap": 8.1e8, "previousClose": 14.4}]),
+            "/snapshot": R(200, {"latestTrade": {"p": 15.2, "t": "2026-10-01T15:00:00.123456789Z"},
+                                  "dailyBar": {"t": dt.datetime.combine(today, dt.time(4, 0)).isoformat() + "Z",
+                                               "c": 15.0, "v": 1200}}),
+        })
+        m = market._fetch("ACME")
+        assert m["mcap"] == 8.1e8 and m["last_close"] == 15.0          # today's close added from Alpaca's day bar
+        assert m["price"] == 15.0 and m["session"] == "close"          # old trade ignored as stale
+        assert abs(m["adv20"] - sum((10 + i * 0.05) * 6e5 for i in range(70, 90)) / 20) < 1   # FMP volumes only
+        assert "FMP history" in m["src"]
+        snap_call = [c for c in calls if "/snapshot" in c[0]][0]
+        assert snap_call[1] == {"feed": "iex"} and snap_call[2]["APCA-API-KEY-ID"] == "kid"
+        assert [c for c in calls if "/quote" in c[0]][0][1] == {"symbol": "ACME", "apikey": "fk"}
+
+        # 2) v3-style {"historical": [...]} newest-first is also understood
+        routes["historical-price-eod/full"] = R(200, {"historical": list(reversed(hist))})
+        h = prices.fmp_history("ACME", "2026-01-01")
+        assert h.index.is_monotonic_increasing and len(h) == 90
+
+        # 3) rejected keys -> Yahoo for everything, one warning per source
+        routes.update({"historical-price-eod/full": R(403, {"Error Message": "plan"}), "/quote": R(401, {}),
+                       "/snapshot": R(401, {})})
+        prices._warned.clear()
+        logged = []
+        h_ = logging.Handler(); h_.emit = lambda rec: logged.append(rec.getMessage())
+        logging.getLogger("prices").addHandler(h_)
+        m = market._fetch("ACME")
+        m2 = market._fetch("ACME")
+        logging.getLogger("prices").removeHandler(h_)
+        assert m["last_close"] == 20.0 and m["mcap"] == 1.5e9 and "Yahoo history" in m["src"]
+        assert len([x for x in logged if "Alpaca rejected" in x]) == 1 and len([x for x in logged if "FMP" in x]) == 1
+
+        # 4) no keys at all -> no requests to Alpaca/FMP
+        C.ALPACA_API_KEY_ID = C.FMP_API_KEY = ""
+        calls.clear()
+        assert market._fetch("ACME")["last_close"] == 20.0 and calls == []
+        assert prices.describe() == "current price=Yahoo · history+market cap=Yahoo · fallback=Yahoo"
+    finally:
+        prices._s.get, C.ALPACA_API_KEY_ID, C.ALPACA_API_SECRET_KEY, C.FMP_API_KEY = saved[:4]
+        if saved[4] is not None:
+            _sys.modules["yfinance"] = saved[4]
+        market._cache.clear(); market._cache.update(saved[5])
+
+
 def test_dod_listing_war_gov_relative_links():
     listing = ('<a href="/Newsroom/Contracts/Contract/Article/4300001/">Contracts For Oct. 29, 2026</a>'
                '<a href="/Newsroom/Contracts/Contract/Article/4300001/">dup</a>'

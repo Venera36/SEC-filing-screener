@@ -150,3 +150,13 @@ EVENT_AI_MAX_PER_DAY = _i("EVENT_AI_MAX_PER_DAY", 150) # cost guard; 0 = unlimit
 EVENT_AI_MAX_CHARS = _i("EVENT_AI_MAX_CHARS", 12000)   # filing text sent per 8-K
 EVENT_MOVED_WARN = _f("EVENT_MOVED_WARN", 0.10)   # flag 8-K/contract/FDA alerts if the stock already moved >= 10%
 EVENTS_POINTS_CAP = _f("EVENTS_POINTS_CAP", 15)       # max points the 'events' signal adds to an insider alert
+
+# ---- Price data (optional; Yahoo is used for anything not configured) ------------------
+# Alpaca: real-time current price (free plan = IEX feed). Alpaca's own variable names work too.
+ALPACA_API_KEY_ID = (os.getenv("ALPACA_API_KEY_ID", "") or os.getenv("APCA_API_KEY_ID", "")).strip()
+ALPACA_API_SECRET_KEY = (os.getenv("ALPACA_API_SECRET_KEY", "") or os.getenv("APCA_API_SECRET_KEY", "")).strip()
+ALPACA_DATA_URL = os.getenv("ALPACA_DATA_URL", "https://data.alpaca.markets").strip().rstrip("/")
+ALPACA_FEED = os.getenv("ALPACA_FEED", "iex").strip() or "iex"            # 'sip' needs a paid Alpaca data plan
+# Financial Modeling Prep: daily price history and market cap
+FMP_API_KEY = os.getenv("FMP_API_KEY", "").strip()
+FMP_BASE_URL = os.getenv("FMP_BASE_URL", "https://financialmodelingprep.com/stable").strip().rstrip("/")
