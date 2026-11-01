@@ -612,6 +612,110 @@ def test_bad_number_setting_falls_back():
             os.environ.pop(k)
 
 
+# ---------------------------------------------------------------- pre-market press releases
+import contextlib
+
+
+@contextlib.contextmanager
+def cfg(**kw):
+    old = {k: getattr(C, k) for k in kw}
+    for k, v in kw.items():
+        setattr(C, k, v)
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            setattr(C, k, v)
+
+
+def test_press_release_tags():
+    from sec_filing import pressreleases as PR
+    t = lambda title, text="": [x for x, _ in PR.tag(title, text)]
+    assert t("Acme Pharma Announces FDA Approval of ZORVAX for Moderate Disease") == ["fda_approval"]
+    assert t("Acme Receives Complete Response Letter from FDA") == ["fda_negative"]
+    assert t("Acme Plans to Seek FDA Approval Next Year") == []
+    assert t("Nano Widgets to Acquire Gizmo Corp for $1.2 Billion") == ["merger"]
+    assert t("Nano Widgets Completes Acquisition of Gizmo Corp") == ["acquisition"]
+    assert t("Acme Appoints Jane Doe as Chief Executive Officer") == ["exec_change"]
+    assert t("Acme Defense Awarded $400 Million Department of Defense Contract") == ["gov_contract"]
+    assert t("Acme Reports Third Quarter 2026 Financial Results") == ["earnings"]
+    assert t("Acme Files Voluntary Chapter 11 Petitions") == ["bankruptcy"]
+    assert t("Acme to Present at Investor Conference") == []
+
+
+def test_press_release_scan_modes():
+    from sec_filing import pressreleases as PR
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+    now = dt.datetime(2026, 11, 2, 4, 10, tzinfo=ET).timestamp()
+    def item(n, minutes_ago, title):
+        pub = dt.datetime.fromtimestamp(now - minutes_ago * 60, ET).strftime("%Y-%m-%d %H:%M:%S")
+        return {"symbol": "acme", "publishedDate": pub, "title": title, "text": "", "site": "Business Wire",
+                "url": f"https://example.com/{n}"}
+    assert abs(PR.published_ts("2026-11-02 04:00:00") - dt.datetime(2026, 11, 2, 4, 0, tzinfo=ET).timestamp()) < 1
+    assert PR.published_ts("") is None and PR.published_ts("junk") is None
+    sent = []
+    db = DB(tempfile.mkdtemp())
+    deal = "Acme to Acquire Gizmo Corp"
+    with cfg(PR_MODE="alert", PR_MAX_AGE_MIN=120, PR_MAX_ALERTS_PER_DAY=2):
+        # first poll: baseline only, nothing sent, nothing counted
+        assert PR.scan(db, [item(1, 5, deal)], now, sent.append) == [] and sent == []
+        assert db.c.execute("SELECT status FROM press_releases").fetchone()[0] == "baseline"
+        # repeat = ignored; new tagged release alerts; untagged logs; backlog is stale
+        new = PR.scan(db, [item(1, 5, deal), item(2, 2, deal), item(3, 1, "Acme to Present at Conference"),
+                           item(4, 300, deal)], now, sent.append)
+        assert [r["status"] for r in new] == ["alerted", "new"] and len(sent) == 1
+        assert "PRESS RELEASE — ACME" in sent[0] and "Merger" in sent[0] and abs(new[0]["lag_sec"] - 120) < 1
+        assert db.c.execute("SELECT status FROM press_releases WHERE url LIKE '%/4'").fetchone()[0] == "stale"
+        # cap: one more alert allowed today, then capped
+        new = PR.scan(db, [item(5, 1, deal), item(6, 1, deal + " II")], now, sent.append)
+        assert [r["status"] for r in new] == ["alerted", "capped"] and len(sent) == 2
+        db.set_kv("paused", "1")
+        assert PR.scan(db, [item(7, 1, deal)], now, sent.append)[0]["status"] == "paused"
+        db.set_kv("paused", "0")
+    with cfg(PR_MODE="log"):
+        assert PR.scan(db, [item(8, 1, deal)], now, sent.append)[0]["status"] == "new" and len(sent) == 2
+        line = PR.summary(db, now - 3600)
+        assert "Press releases (log): 6 new today" in line and "lag median" in line
+
+
+def test_press_release_fetch_errors():
+    from sec_filing import pressreleases as PR
+    class R:
+        def __init__(self, code, body, text=""):
+            self.status_code, self._b, self.text = code, body, text
+        def json(self):
+            return self._b
+    saved = PR._s.get
+    try:
+        for resp in (R(403, {}, "Restricted Endpoint"), R(200, {"Error Message": "Exclusive Endpoint"}), R(500, {})):
+            PR._s.get = lambda *a, _r=resp, **k: _r
+            PR._warned.clear()
+            assert PR.fetch() is None
+        PR._s.get = lambda *a, **k: R(200, [{"symbol": "A", "title": "x"}, "junk"])
+        assert PR.fetch() == [{"symbol": "A", "title": "x"}]
+    finally:
+        PR._s.get = saved
+
+
+def test_press_release_window_and_dst():
+    from sec_filing import schedule as S
+    from zoneinfo import ZoneInfo
+    CT = ZoneInfo("America/Chicago")
+    at = lambda *a: dt.datetime(*a, tzinfo=CT)
+    with cfg(ACTIVE_START="05:00", ACTIVE_END="21:00", ACTIVE_DAYS="0,1,2,3,4", SCHEDULE_TZ="America/Chicago",
+             HONOR_HOLIDAYS=True):
+        assert S.is_active(at(2026, 11, 2, 3, 0), start="03:00") and not S.is_active(at(2026, 11, 2, 3, 0))
+        assert not S.is_active(at(2026, 11, 2, 2, 59), start="03:00")
+        assert not S.is_active(at(2026, 11, 26, 4, 0), start="03:00")        # Thanksgiving
+        # Friday 10:04 pm CDT -> Monday 5:00 am CST spans the clock change: real time, not wall time
+        n = dt.datetime(2026, 10, 31, 3, 4, tzinfo=dt.timezone.utc)
+        w = S.seconds_until_active(n)
+        assert (n + dt.timedelta(seconds=w)).astimezone(CT) == at(2026, 11, 2, 5, 0)
+        w = S.seconds_until_active(n, start="03:00")
+        assert (n + dt.timedelta(seconds=w)).astimezone(CT) == at(2026, 11, 2, 3, 0)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

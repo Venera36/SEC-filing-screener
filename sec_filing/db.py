@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS awards(
   price REAL, alerted_at REAL, last_outcome_check TEXT DEFAULT '',
   ret5 REAL, ret20 REAL, ret60 REAL, spy5 REAL, spy20 REAL, spy60 REAL);
 CREATE INDEX IF NOT EXISTS ix_a_ticker ON awards(ticker, seen_date);
+-- Press releases from FMP (status: baseline, stale, new, alerted, paused, capped). lag_sec = first seen - published
+CREATE TABLE IF NOT EXISTS press_releases(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT UNIQUE, symbol TEXT, published TEXT, title TEXT, site TEXT,
+  url TEXT, tags TEXT DEFAULT '[]', first_seen REAL, lag_sec REAL, status TEXT, alerted_at REAL);
+CREATE INDEX IF NOT EXISTS ix_pr_seen ON press_releases(first_seen);
 """
 FEED_TABLES = ("events", "awards")
 TRACKED_COLS = {"offering_notified", "last_offering_check", "last_outcome_check",
@@ -231,6 +236,26 @@ class DB:
                 self.c.execute(f"UPDATE {table} SET status=? WHERE id=?", (status, row_id))
             if note is not None:
                 self.c.execute(f"UPDATE {table} SET note=? WHERE id=?", (note, row_id))
+
+    # ---- press releases ----
+    def pr_count(self):
+        return self.c.execute("SELECT COUNT(*) FROM press_releases").fetchone()[0]
+
+    def pr_seen(self, key):
+        return self.c.execute("SELECT 1 FROM press_releases WHERE key=?", (key,)).fetchone() is not None
+
+    def pr_add(self, r):
+        with self.c:
+            self.c.execute("INSERT OR IGNORE INTO press_releases(key,symbol,published,title,site,url,tags,first_seen,"
+                           "lag_sec,status,alerted_at) VALUES(:key,:symbol,:published,:title,:site,:url,:tags,"
+                           ":first_seen,:lag_sec,:status,:alerted_at)", r)
+
+    def pr_since(self, ts):
+        return self.c.execute("SELECT * FROM press_releases WHERE first_seen>=? AND status NOT IN ('baseline','stale')",
+                              (ts,)).fetchall()
+
+    def pr_alerts_since(self, ts):
+        return self.c.execute("SELECT COUNT(*) FROM press_releases WHERE alerted_at>=?", (ts,)).fetchone()[0]
 
     def feed_alerts_since(self, ts):
         return sum(self.c.execute(f"SELECT COUNT(*) FROM {t} WHERE alerted_at>=?", (ts,)).fetchone()[0]

@@ -126,6 +126,24 @@ Every 8-K/contract/FDA alert gets the same 5/20/60-trading-day result follow-ups
 `WINDOW_DAYS`. Insider alerts show negative 8-K news as warnings, and the `events` signal (in `SIGNALS_ENABLED`) adds
 up to `EVENTS_POINTS_CAP` points for positive news, following `SIGNALS_MODE` like the other signals (default `shadow` = logged only).
 
+## Pre-market press releases (`PR_MODE`)
+
+Companies often publish news on the newswires from 4:00 am Eastern, before the matching 8-K reaches EDGAR at
+6:00 am. With `FMP_API_KEY` set, a separate thread polls FMP's `news/press-releases-latest` every
+`PR_POLL_SECONDS` (60) from `PR_START` (03:00 Central = 4:00 am Eastern) until `ACTIVE_END` on open days, even
+while the main SEC loop is still asleep. Releases are tagged with the same vocabulary as 8-Ks (FDA, government
+contract, merger, completed acquisition, CEO/CFO change, bankruptcy, earnings).
+
+- `PR_MODE=log` (default): every release is stored with how many seconds after its published time the bot first
+  saw it, and logged as `PR <ticker> ... lag=<s>`. `/status` shows today's count and the median/best lag. Use this
+  for a few mornings to judge whether FMP is fast enough before turning alerts on.
+- `PR_MODE=alert`: also sends releases whose tags are in `PR_ALERT_TAGS` to Telegram (`EVENTS_CHAT_ID` if set),
+  at most `PR_MAX_ALERTS_PER_DAY`, and not while `/pause` is on.
+- `PR_MODE=off`: disabled.
+
+The first poll only records a baseline, and releases already older than `PR_MAX_AGE_MIN` when first seen are
+never alerted. If your FMP plan doesn't include press releases, the log says so once an hour.
+
 ## Telegram buttons and commands
 Alerts carry **Approve / Skip** buttons that record your decision (shown in `--report`). They never place orders.
 `/pause` and `/resume` stop and restart new alerts (ingestion and follow-ups continue); `/status` shows state and today's count.

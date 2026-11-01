@@ -151,6 +151,18 @@ EVENT_AI_MAX_CHARS = _i("EVENT_AI_MAX_CHARS", 12000)   # filing text sent per 8-
 EVENT_MOVED_WARN = _f("EVENT_MOVED_WARN", 0.10)   # flag 8-K/contract/FDA alerts if the stock already moved >= 10%
 EVENTS_POINTS_CAP = _f("EVENTS_POINTS_CAP", 15)       # max points the 'events' signal adds to an insider alert
 
+# ---- Pre-market press releases (FMP /news/press-releases-latest; needs FMP_API_KEY) ----
+# off | log (store + log, no Telegram) | alert (also send tagged releases to Telegram)
+PR_MODE = _mode("PR_MODE", "log", ("off", "log", "alert"))
+PR_START = os.getenv("PR_START", "03:00").strip() or "03:00"   # in SCHEDULE_TZ; 03:00 Central = 4:00 am Eastern
+PR_POLL_SECONDS = max(15, _i("PR_POLL_SECONDS", 60))
+PR_FETCH_LIMIT = _i("PR_FETCH_LIMIT", 50)              # newest releases fetched per poll
+PR_MAX_AGE_MIN = _i("PR_MAX_AGE_MIN", 120)             # older than this when first seen = backlog, never alerted
+PR_TIME_TZ = os.getenv("PR_TIME_TZ", "America/New_York").strip() or "America/New_York"   # zone of FMP's timestamps
+PR_ALERT_TAGS = os.getenv("PR_ALERT_TAGS", "fda_approval,fda_milestone,fda_negative,gov_contract,merger,"
+                          "acquisition,exec_change,bankruptcy")
+PR_MAX_ALERTS_PER_DAY = _i("PR_MAX_ALERTS_PER_DAY", 20)   # 0 = unlimited
+
 # ---- Price data (optional; Yahoo is used for anything not configured) ------------------
 # Alpaca: real-time current price (free plan = IEX feed). Alpaca's own variable names work too.
 ALPACA_API_KEY_ID = (os.getenv("ALPACA_API_KEY_ID", "") or os.getenv("APCA_API_KEY_ID", "")).strip()

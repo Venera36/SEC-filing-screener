@@ -5,7 +5,7 @@ import time
 import logging
 import threading
 
-from . import config as C, schedule, telegram
+from . import pressreleases, config as C, schedule, telegram
 from .db import DB
 
 log = logging.getLogger("control")
@@ -47,7 +47,8 @@ def handle_update(db, upd):
                       f"{f' / cap {C.MAX_ALERTS_PER_DAY}' if C.MAX_ALERTS_PER_DAY else ''}\n"
                       f"\n8-K / contract / FDA alerts today: {db.feed_alerts_since(start)}"
                       f"{f' / cap {C.MAX_EVENT_ALERTS_PER_DAY}' if C.MAX_EVENT_ALERTS_PER_DAY else ''}\n"
-                      f"Signals mode: {C.SIGNALS_MODE} · AI mode: {C.AI_MODE}")
+                      f"Signals mode: {C.SIGNALS_MODE} · AI mode: {C.AI_MODE}"
+                      + (f"\n{pressreleases.summary(db, start)}" if pressreleases.enabled() else ""))
 
 
 def _run():

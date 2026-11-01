@@ -344,6 +344,9 @@ def main():
     db, edgar = DB(C.DATA_DIR), Edgar(C.SEC_USER_AGENT)
     if not a.dry_run and not a.once and C.TELEGRAM_CONTROL:
         control.start()
+    if not a.dry_run and not a.once:
+        from . import pressreleases
+        pressreleases.start()
     log.info("SEC Filing bot · signals mode=%s (%s) · AI mode=%s · insider alert cap/day=%s",
              C.SIGNALS_MODE, C.SIGNALS_ENABLED, C.AI_MODE, C.MAX_ALERTS_PER_DAY or "unlimited")
     log.info("8-K screening=%s (alert tags: %s) · feeds=%s · event alert cap/day=%s", C.EVENTS_ENABLED,

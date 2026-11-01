@@ -92,8 +92,9 @@ def test_schedule():
     assert schedule.is_active(dt.datetime(2026, 10, 27, 5, 0, tzinfo=tz))        # Tue 5:00
     assert not schedule.is_active(dt.datetime(2026, 10, 27, 21, 0, tzinfo=tz))   # Tue 21:00
     assert not schedule.is_active(dt.datetime(2026, 10, 24, 12, 0, tzinfo=tz))   # Sat
-    # Fri 22:00 -> Mon 05:00
-    assert schedule.seconds_until_active(dt.datetime(2026, 10, 30, 22, 0, tzinfo=tz)) == 55 * 3600
+    # Fri 22:00 CDT -> Mon 05:00 CST: 55 wall-clock hours, 56 real hours (clocks fall back Nov 1)
+    assert schedule.seconds_until_active(dt.datetime(2026, 10, 30, 22, 0, tzinfo=tz)) == 56 * 3600
+    assert schedule.seconds_until_active(dt.datetime(2026, 10, 23, 22, 0, tzinfo=tz)) == 55 * 3600   # no change
     assert not schedule.is_active(dt.datetime(2026, 11, 26, 12, 0, tzinfo=tz))   # Thanksgiving
     assert schedule.seconds_until_active(dt.datetime(2026, 11, 25, 22, 0, tzinfo=tz)) == 31 * 3600
     assert schedule.seconds_until_active(dt.datetime(2026, 10, 27, 2, 0, tzinfo=tz)) == 3 * 3600
