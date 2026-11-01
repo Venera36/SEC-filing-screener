@@ -43,7 +43,8 @@ CREATE INDEX IF NOT EXISTS ix_a_ticker ON awards(ticker, seen_date);
 -- Press releases from FMP (status: baseline, stale, new, alerted, paused, capped). lag_sec = first seen - published
 CREATE TABLE IF NOT EXISTS press_releases(
   id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT UNIQUE, symbol TEXT, published TEXT, title TEXT, site TEXT,
-  url TEXT, tags TEXT DEFAULT '[]', first_seen REAL, lag_sec REAL, status TEXT, alerted_at REAL);
+  url TEXT, tags TEXT DEFAULT '[]', first_seen REAL, lag_sec REAL, status TEXT, alerted_at REAL,
+  note TEXT DEFAULT '');
 CREATE INDEX IF NOT EXISTS ix_pr_seen ON press_releases(first_seen);
 """
 FEED_TABLES = ("events", "awards")
@@ -75,6 +76,8 @@ class DB:
             ev_cols = {r["name"] for r in self.c.execute("PRAGMA table_info(events)")}
             if "ai" not in ev_cols:
                 self.c.execute("ALTER TABLE events ADD COLUMN ai TEXT DEFAULT ''")
+            if "note" not in {r["name"] for r in self.c.execute("PRAGMA table_info(press_releases)")}:
+                self.c.execute("ALTER TABLE press_releases ADD COLUMN note TEXT DEFAULT ''")
 
     # ---- key/value (pause flag, Telegram update offset) ----
     def get_kv(self, k, default=None):
@@ -247,12 +250,27 @@ class DB:
     def pr_add(self, r):
         with self.c:
             self.c.execute("INSERT OR IGNORE INTO press_releases(key,symbol,published,title,site,url,tags,first_seen,"
-                           "lag_sec,status,alerted_at) VALUES(:key,:symbol,:published,:title,:site,:url,:tags,"
-                           ":first_seen,:lag_sec,:status,:alerted_at)", r)
+                           "lag_sec,status,alerted_at,note) VALUES(:key,:symbol,:published,:title,:site,:url,:tags,"
+                           ":first_seen,:lag_sec,:status,:alerted_at,:note)", dict({"note": ""}, **r))
 
     def pr_since(self, ts):
         return self.c.execute("SELECT * FROM press_releases WHERE first_seen>=? AND status NOT IN ('baseline','stale')",
                               (ts,)).fetchall()
+
+    def pr_alert_tags(self, ticker, since_ts):
+        """Tags of press releases already alerted for this ticker since since_ts (to skip the matching 8-K)."""
+        out = set()
+        for r in self.c.execute("SELECT tags FROM press_releases WHERE symbol=? AND alerted_at>=?", (ticker, since_ts)):
+            out |= set(json.loads(r["tags"] or "[]"))
+        return out
+
+    def event_alert_tags(self, ticker, since_ts):
+        """Tags of 8-Ks already alerted for this ticker since since_ts (to skip the matching press release)."""
+        out = set()
+        for r in self.c.execute("SELECT tags FROM events WHERE ticker=? AND status='alerted' AND alerted_at>=?",
+                                (ticker, since_ts)):
+            out |= {t[0] if isinstance(t, list) else t for t in json.loads(r["tags"] or "[]")}
+        return out
 
     def pr_alerts_since(self, ts):
         return self.c.execute("SELECT COUNT(*) FROM press_releases WHERE alerted_at>=?", (ts,)).fetchone()[0]

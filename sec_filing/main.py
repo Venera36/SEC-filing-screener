@@ -151,6 +151,10 @@ def scan_events(db, edgar, dry, index_days):
         return
     want = events.alert_tags()
     for ev in events.process(db, edgar, market.get, found, today):
+        hit = {t for t, _ in ev["tags"] if t in want}
+        if hit and hit <= db.pr_alert_tags(ev["ticker"], time.time() - C.PR_DEDUP_HOURS * 3600):
+            log.info("%s 8-K not sent: same news already alerted from its press release %s", ev["ticker"], sorted(hit))
+            db.mark_feed("events", ev["id"], "logged", "already alerted from the press release"); continue
         if db.get_kv("paused") == "1":
             db.mark_feed("events", ev["id"], "paused"); continue
         if not _room_for_event_alert(db):

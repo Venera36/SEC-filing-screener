@@ -134,12 +134,17 @@ Companies often publish news on the newswires from 4:00 am Eastern, before the m
 while the main SEC loop is still asleep. Releases are tagged with the same vocabulary as 8-Ks (FDA, government
 contract, merger, completed acquisition, CEO/CFO change, bankruptcy, earnings).
 
-- `PR_MODE=log` (default): every release is stored with how many seconds after its published time the bot first
-  saw it, and logged as `PR <ticker> ... lag=<s>`. `/status` shows today's count and the median/best lag. Use this
-  for a few mornings to judge whether FMP is fast enough before turning alerts on.
-- `PR_MODE=alert`: also sends releases whose tags are in `PR_ALERT_TAGS` to Telegram (`EVENTS_CHAT_ID` if set),
-  at most `PR_MAX_ALERTS_PER_DAY`, and not while `/pause` is on.
+- `PR_MODE=alert` (default): releases whose tags are in `PR_ALERT_TAGS` go to Telegram (`EVENTS_CHAT_ID` if set)
+  if the stock passes the same price / liquidity / market-cap gates as 8-K alerts (`EVENT_MIN_PRICE`,
+  `EVENT_MIN_ADV_USD`, `EVENT_MIN_MCAP`, `EVENT_MAX_MCAP`; bankruptcy skips the size gates), alerts aren't paused,
+  and `PR_MAX_ALERTS_PER_DAY` isn't reached. If the same ticker and news type was already alerted as an 8-K or an
+  earlier release within `PR_DEDUP_HOURS` (18), it is skipped, and the 8-K scan likewise skips a filing whose news
+  already went out from the press release.
+- `PR_MODE=log`: store and log only, nothing sent.
 - `PR_MODE=off`: disabled.
+
+In every mode each release is stored with how many seconds after its published time the bot first saw it, and
+logged as `PR <ticker> <status> lag=<s>`; `/status` shows today's count and the median/best lag.
 
 The first poll only records a baseline, and releases already older than `PR_MAX_AGE_MIN` when first seen are
 never alerted. If your FMP plan doesn't include press releases, the log says so once an hour.

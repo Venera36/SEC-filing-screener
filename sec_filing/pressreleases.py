@@ -4,9 +4,13 @@ Companies often put news out on the newswires (Business Wire, PR Newswire, Globe
 before the matching 8-K reaches EDGAR at 6:00 am. This runs in its own thread so it can start at PR_START while
 the main SEC loop is still asleep, and polls FMP every PR_POLL_SECONDS on open days until ACTIVE_END.
 
-PR_MODE=log (the default) stores every release with lag_sec = first seen here - FMP's published time, and logs it,
-so you can judge how fresh the feed is before turning on alerts. PR_MODE=alert also sends releases whose tags
-are in PR_ALERT_TAGS to Telegram (capped by PR_MAX_ALERTS_PER_DAY, respecting /pause).
+PR_MODE=alert (the default) sends releases whose tags are in PR_ALERT_TAGS to Telegram, but only if the stock
+passes the same price / liquidity / market-cap gates as 8-K alerts, the same news wasn't already alerted as an 8-K
+or an earlier release (PR_DEDUP_HOURS), alerts aren't paused, and PR_MAX_ALERTS_PER_DAY isn't reached. The 8-K scan
+in turn skips a filing whose news was already alerted from a press release.
+
+PR_MODE=log stores every release with lag_sec = first seen here - FMP's published time, and logs it,
+without sending anything. Both modes record lag_sec, shown in /status.
 
 The first poll after an empty table only records a baseline, and releases already older than PR_MAX_AGE_MIN
 when first seen are stored as 'stale': neither is ever alerted or counted in the timing stats.
@@ -23,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from . import config as C, schedule, telegram
+from . import config as C, events, schedule, telegram
 from .db import DB
 from .events import FDA_NEG, FDA_APPROVAL, FDA_PLANNED, FDA_MILESTONE, GOV, AWARD, MERGER, TAGS, snippet
 
@@ -145,13 +149,24 @@ def format_alert(r, tags):
     return "\n".join(lines)
 
 
-def scan(db, items=None, now=None, send=None):
-    """Store new releases; in alert mode send tagged ones. Returns the list of new (non-baseline) rows."""
+def market_check(m, tags):
+    """Rejection reason or None: the same price / liquidity / market-cap gates as 8-K alerts.
+    Bankruptcy skips the size gates, as it does for 8-Ks (a warning matters at any size)."""
+    return events.gate(m, ["1.03"] if "bankruptcy" in tags else [])
+
+
+def scan(db, items=None, now=None, send=None, market_get=None):
+    """Store new releases; in alert mode send tagged ones that pass the market gates and aren't duplicates of an
+    alert already sent. Returns the list of new (non-baseline) rows."""
     items = fetch() if items is None else items
     if items is None:
         return []
     now = now or time.time()
     send = send or (lambda text: telegram.send(text, chat_id=C.EVENTS_CHAT_ID or None))
+    if market_get is None:
+        from . import market
+        market_get = market.get
+    dup_since = now - C.PR_DEDUP_HOURS * 3600
     baseline = db.pr_count() == 0
     want = {t.strip() for t in C.PR_ALERT_TAGS.split(",") if t.strip()}
     day_start = schedule.now_local(dt.datetime.fromtimestamp(now, dt.timezone.utc)).replace(
@@ -173,10 +188,16 @@ def scan(db, items=None, now=None, send=None):
         elif lag is not None and lag > C.PR_MAX_AGE_MIN * 60:
             r["status"] = "stale"
         elif C.PR_MODE == "alert" and want & {t for t, _ in tags} and r["symbol"]:
-            if db.get_kv("paused") == "1":
+            hit = want & {t for t, _ in tags}
+            already = db.event_alert_tags(r["symbol"], dup_since) | db.pr_alert_tags(r["symbol"], dup_since)
+            if not hit - already:
+                r["status"], r["note"] = "duplicate", "already alerted: " + ",".join(sorted(hit & already))
+            elif db.get_kv("paused") == "1":
                 r["status"] = "paused"
             elif C.PR_MAX_ALERTS_PER_DAY and db.pr_alerts_since(day_start) >= C.PR_MAX_ALERTS_PER_DAY:
                 r["status"] = "capped"
+            elif (reason := market_check(market_get(r["symbol"]), hit)):
+                r["status"], r["note"] = "rejected_market", reason
             else:
                 try:
                     send(format_alert(r, tags))
@@ -186,8 +207,9 @@ def scan(db, items=None, now=None, send=None):
         db.pr_add(r)
         if r["status"] not in ("baseline", "stale"):
             new.append(r)
-            log.info("PR %-6s %-8s lag=%s tags=%s: %s", r["symbol"] or "-", r["status"],
-                     f"{lag:.0f}s" if lag is not None else "?", ",".join(t for t, _ in tags) or "-", r["title"][:120])
+            log.info("PR %-6s %-15s lag=%s tags=%s%s: %s", r["symbol"] or "-", r["status"],
+                     f"{lag:.0f}s" if lag is not None else "?", ",".join(t for t, _ in tags) or "-",
+                     f" ({r['note']})" if r.get("note") else "", r["title"][:120])
     if baseline and items:
         log.info("press releases: first poll stored %d existing release(s) as a baseline (not alerted)", len(items))
     return new

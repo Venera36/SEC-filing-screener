@@ -1,5 +1,5 @@
 """Tests for 8-K screening, government contracts, FDA approvals and the name matcher. No network."""
-import os, sys, json, tempfile, datetime as dt
+import os, sys, json, time, tempfile, datetime as dt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["SEC_USER_AGENT"] = "test test@example.com"
 from sec_filing import config as C, events, feeds, names, telegram, event_signal, signals, main as M
@@ -295,6 +295,16 @@ def test_scan_events_seeds_then_alerts():
         assert len(sent) == 1 and "8-K — $ACME" in sent[0]
         assert "Since the 8-K: <b>+12.4%</b>" in sent[0] and "market already reacted" in sent[0]
         assert db.feed_alerts_since(0) == 1
+        # a gov-contract press release for ACME already went out: the matching 8-K is logged, not sent again
+        db.pr_add({"key": "pr1", "symbol": "ACME", "published": "", "title": "", "site": "", "url": "",
+                   "tags": '["gov_contract"]', "first_seen": time.time(), "lag_sec": 0, "status": "alerted",
+                   "alerted_at": time.time()})
+        docs["b2"] = docs["b1"]
+        M.events.gather = lambda edgar, today, n: dict(first, b2={"cik": "111", "company": "Acme", "items": ["8.01"]})
+        M.scan_events(db, e, True, 0)
+        assert len(sent) == 1
+        assert db.c.execute("SELECT status, note FROM events WHERE accession='b2'").fetchone()[:] == \
+            ("logged", "already alerted from the press release")
     finally:
         M._push, M.market.get, M.events.gather, M.market.move_since = saved
 
@@ -648,35 +658,60 @@ def test_press_release_scan_modes():
     from zoneinfo import ZoneInfo
     ET = ZoneInfo("America/New_York")
     now = dt.datetime(2026, 11, 2, 4, 10, tzinfo=ET).timestamp()
-    def item(n, minutes_ago, title):
+    def item(n, minutes_ago, title, sym="acme"):
         pub = dt.datetime.fromtimestamp(now - minutes_ago * 60, ET).strftime("%Y-%m-%d %H:%M:%S")
-        return {"symbol": "acme", "publishedDate": pub, "title": title, "text": "", "site": "Business Wire",
+        return {"symbol": sym, "publishedDate": pub, "title": title, "text": "", "site": "Business Wire",
                 "url": f"https://example.com/{n}"}
     assert abs(PR.published_ts("2026-11-02 04:00:00") - dt.datetime(2026, 11, 2, 4, 0, tzinfo=ET).timestamp()) < 1
     assert PR.published_ts("") is None and PR.published_ts("junk") is None
+    tiny = dict(M_OK, mcap=4e7)
+    mk = lambda t: {"TINY": tiny, "BUST": dict(tiny, price=0.5), "NONE": None}.get(t, M_OK)
     sent = []
     db = DB(tempfile.mkdtemp())
-    deal = "Acme to Acquire Gizmo Corp"
-    with cfg(PR_MODE="alert", PR_MAX_AGE_MIN=120, PR_MAX_ALERTS_PER_DAY=2):
+    deal = " to Acquire Gizmo Corp"
+    scan = lambda its: PR.scan(db, its, now, sent.append, mk)
+    status = lambda rows: [r["status"] for r in rows]
+    assert C.PR_MODE == "alert"                                       # alerts are on by default
+    with cfg(PR_MAX_AGE_MIN=120, PR_MAX_ALERTS_PER_DAY=3, PR_DEDUP_HOURS=18):
         # first poll: baseline only, nothing sent, nothing counted
-        assert PR.scan(db, [item(1, 5, deal)], now, sent.append) == [] and sent == []
+        assert scan([item(1, 5, "Acme" + deal)]) == [] and sent == []
         assert db.c.execute("SELECT status FROM press_releases").fetchone()[0] == "baseline"
-        # repeat = ignored; new tagged release alerts; untagged logs; backlog is stale
-        new = PR.scan(db, [item(1, 5, deal), item(2, 2, deal), item(3, 1, "Acme to Present at Conference"),
-                           item(4, 300, deal)], now, sent.append)
-        assert [r["status"] for r in new] == ["alerted", "new"] and len(sent) == 1
+        # repeat ignored; tagged release alerts; untagged only logs; backlog is stale
+        new = scan([item(1, 5, "Acme" + deal), item(2, 2, "Acme" + deal), item(3, 1, "Acme to Present at Conference"),
+                    item(4, 300, "Acme" + deal)])
+        assert status(new) == ["alerted", "new"] and len(sent) == 1
         assert "PRESS RELEASE — ACME" in sent[0] and "Merger" in sent[0] and abs(new[0]["lag_sec"] - 120) < 1
         assert db.c.execute("SELECT status FROM press_releases WHERE url LIKE '%/4'").fetchone()[0] == "stale"
-        # cap: one more alert allowed today, then capped
-        new = PR.scan(db, [item(5, 1, deal), item(6, 1, deal + " II")], now, sent.append)
-        assert [r["status"] for r in new] == ["alerted", "capped"] and len(sent) == 2
+        # same ticker + same news type again = duplicate; a different news type still alerts
+        new = scan([item(5, 1, "Acme Announces Merger Agreement Update"),
+                    item(6, 1, "Acme Appoints Jane Doe as Chief Executive Officer")])
+        assert status(new) == ["duplicate", "alerted"] and len(sent) == 2
+        # market gates: small cap and no data rejected; bankruptcy skips the size gates
+        new = scan([item(7, 1, "Tiny" + deal, "tiny"), item(8, 1, "None" + deal, "none"),
+                    item(9, 1, "Bust Files Voluntary Chapter 11 Petitions", "bust")])
+        assert status(new) == ["rejected_market", "rejected_market", "alerted"] and len(sent) == 3
+        assert "market cap" in db.c.execute("SELECT note FROM press_releases WHERE url LIKE '%/7'").fetchone()[0]
+        # daily cap (3) reached
+        assert status(scan([item(10, 1, "Other" + deal, "othr")])) == ["capped"]
+    with cfg(PR_MAX_ALERTS_PER_DAY=0):
         db.set_kv("paused", "1")
-        assert PR.scan(db, [item(7, 1, deal)], now, sent.append)[0]["status"] == "paused"
+        assert status(scan([item(11, 1, "Paws" + deal, "paws")])) == ["paused"]
         db.set_kv("paused", "0")
     with cfg(PR_MODE="log"):
-        assert PR.scan(db, [item(8, 1, deal)], now, sent.append)[0]["status"] == "new" and len(sent) == 2
+        assert status(scan([item(12, 1, "Logd" + deal, "logd")])) == ["new"] and len(sent) == 3
         line = PR.summary(db, now - 3600)
-        assert "Press releases (log): 6 new today" in line and "lag median" in line
+        assert "Press releases (log): 10 new today" in line and "lag median" in line
+    # the other direction: an 8-K or FDA record with news already sent from the release is not alerted again
+    assert db.pr_alert_tags("ACME", now - 3600) == {"merger", "exec_change"}
+    assert feeds._already_alerted_fda(db, "ACME", TODAY) is False
+    db.pr_add({"key": "fda", "symbol": "VRTX", "published": "", "title": "", "site": "", "url": "",
+               "tags": '["fda_approval"]', "first_seen": now, "lag_sec": 0, "status": "alerted", "alerted_at": time.time()})
+    assert feeds._already_alerted_fda(db, "VRTX", schedule_today())
+
+
+def schedule_today():
+    from sec_filing import schedule
+    return schedule.now_local().date()
 
 
 def test_press_release_fetch_errors():

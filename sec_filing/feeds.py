@@ -225,7 +225,7 @@ def process(db, edgar, market_get, recs, today):
             continue
         if source == "openfda" and _already_alerted_fda(db, tk, today):
             for i in ids:
-                db.mark_feed("awards", i, "logged", "already alerted from the company's 8-K")
+                db.mark_feed("awards", i, "logged", "already alerted from the company's 8-K or press release")
             continue
         out.append({"ids": ids, "source": source, "ticker": tk, "cik": g["cik"], "how": g["how"], "date": date,
                     "total": total, "recs": g["recs"], "m": m})
@@ -257,5 +257,8 @@ def gate(source, total, m):
 
 def _already_alerted_fda(db, ticker, today):
     since = (today - dt.timedelta(days=14)).isoformat()
+    since_ts = dt.datetime.combine(today - dt.timedelta(days=14), dt.time()).timestamp()
+    if "fda_approval" in db.pr_alert_tags(ticker, since_ts):
+        return True
     return any(e["status"] == "alerted" and any(t == "fda_approval" for t, _ in e["tags"])
                for e in db.recent_events(ticker=ticker, since_iso=since))
