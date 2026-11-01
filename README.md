@@ -132,7 +132,13 @@ Companies often publish news on the newswires from 4:00 am Eastern, before the m
 6:00 am. With `FMP_API_KEY` set, a separate thread polls FMP's `news/press-releases-latest` every
 `PR_POLL_SECONDS` (60) from `PR_START` (03:00 Central = 4:00 am Eastern) until `ACTIVE_END` on open days, even
 while the main SEC loop is still asleep. Releases are tagged with the same vocabulary as 8-Ks (FDA, government
-contract, merger, completed acquisition, CEO/CFO change, bankruptcy, earnings).
+contract, merger, completed acquisition, CEO/CFO change, bankruptcy, earnings, dilution, financing), plus two
+press-release tags: `agreement` (a commercial contract or agreement in the headline) and `merger_target` (the
+release's own company is the one being acquired, judged from the headline and its SEC-registered name).
+
+By default only news that usually lifts the stock alerts: `PR_ALERT_TAGS=fda_approval,fda_milestone,gov_contract,
+agreement,merger_target`. Buyers in a merger (who often fall), stock sales dressed up as "purchase agreements",
+and contracts that don't state a value of at least `PR_CONTRACT_MIN_PCT_MCAP` (1%) of market cap are not sent.
 
 - `PR_MODE=alert` (default): releases whose tags are in `PR_ALERT_TAGS` go to Telegram (`EVENTS_CHAT_ID` if set)
   if the stock passes the same price / liquidity / market-cap gates as 8-K alerts (`EVENT_MIN_PRICE`,

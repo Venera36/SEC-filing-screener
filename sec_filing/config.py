@@ -159,8 +159,11 @@ PR_POLL_SECONDS = max(15, _i("PR_POLL_SECONDS", 60))
 PR_FETCH_LIMIT = _i("PR_FETCH_LIMIT", 50)              # newest releases fetched per poll
 PR_MAX_AGE_MIN = _i("PR_MAX_AGE_MIN", 120)             # older than this when first seen = backlog, never alerted
 PR_TIME_TZ = os.getenv("PR_TIME_TZ", "America/New_York").strip() or "America/New_York"   # zone of FMP's timestamps
-PR_ALERT_TAGS = os.getenv("PR_ALERT_TAGS", "fda_approval,fda_milestone,fda_negative,gov_contract,merger,"
-                          "acquisition,exec_change,bankruptcy")
+# News that usually lifts the stock: FDA approval / milestone, a material contract (government or commercial),
+# or the company being acquired. Other tags: merger (buyer or unclear), acquisition (completed), exec_change,
+# bankruptcy, fda_negative, dilution, financing, earnings.
+PR_ALERT_TAGS = os.getenv("PR_ALERT_TAGS", "fda_approval,fda_milestone,gov_contract,agreement,merger_target")
+PR_CONTRACT_MIN_PCT_MCAP = _f("PR_CONTRACT_MIN_PCT_MCAP", 0.01)   # contract value must be >= 1% of market cap
 PR_MAX_ALERTS_PER_DAY = _i("PR_MAX_ALERTS_PER_DAY", 20)   # 0 = unlimited
 PR_DEDUP_HOURS = _f("PR_DEDUP_HOURS", 18)   # same ticker + tag already alerted (8-K or release) within this = skip
 

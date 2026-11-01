@@ -27,9 +27,10 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from . import config as C, events, schedule, telegram
+from . import config as C, events, names, schedule, telegram
 from .db import DB
-from .events import FDA_NEG, FDA_APPROVAL, FDA_PLANNED, FDA_MILESTONE, GOV, AWARD, MERGER, TAGS, snippet
+from .events import (FDA_NEG, FDA_APPROVAL, FDA_PLANNED, FDA_MILESTONE, GOV, AWARD, MERGER, DILUTION, FINANCING,
+                     TAGS, snippet)
 
 log = logging.getLogger("pr")
 _s = requests.Session()
@@ -49,8 +50,51 @@ EARNINGS = re.compile(r"\b(?:report\w*|announc\w*|releas\w*)\b[^.]{0,60}\b(?:qua
                       r"[^.]{0,60}\bresults\b|\b(?:first|second|third|fourth)\s+quarter[^.]{0,40}\bresults\b", re.I)
 
 
-def tag(title, text):
-    """Pure function: (headline, body) -> [(tag, snippet)] using the 8-K vocabulary in events.TAGS."""
+PASSIVE_TARGET = re.compile(r"\b(?:to\s+be\s+acquired|agrees?\s+to\s+be\s+acquired|(?:will\s+be|being)\s+acquired|"
+                            r"acquired\s+by|to\s+be\s+taken\s+private|to\s+go\s+private)\b", re.I)
+ACQUIRE_VERB = re.compile(r"\b(?:to\s+acquire|agrees?\s+to\s+acquire|will\s+acquire|to\s+buy|agrees?\s+to\s+buy|"
+                          r"(?:announces|enters\s+into)\s+(?:a\s+)?(?:definitive\s+)?agreement\s+to\s+acquire|"
+                          r"announces\s+(?:the\s+)?acquisition\s+of)\b", re.I)
+AGREE_HEAD = re.compile(r"\b(?:signs?|signed|signing|enters?\s+into|entered\s+into|announc\w*|secur\w*|wins?|won|"
+                        r"award\w*|receiv\w*|lands?|expands?|extends?|books?|selected)\b[^.]{0,80}?\b(?:contracts?|"
+                        r"agreements?|orders?|partnership|collaboration|licens\w*|supply|distribution|deal)\b", re.I)
+# label shown in the alert, for tags that exist only for press releases
+EXTRA_LABELS = {"merger_target": "Being acquired (deal premium)", "agreement": "New contract / agreement"}
+SIZED = {"agreement", "gov_contract"}      # alert only if the stated value is material vs market cap
+
+
+def _company_word(symbol):
+    """First word of the symbol's SEC-registered name ('acme' for ACME DEFENSE SYSTEMS INC), or ''."""
+    if not symbol:
+        return ""
+    for r in names._tick["by_cik"].values():
+        if r["ticker"] == symbol.upper():
+            w = names.norm(r["title"]).split()
+            return w[0] if w and len(w[0]) >= 3 else ""
+    return ""
+
+
+def merger_side(head, symbol):
+    """'target' if the release's own company is the one being acquired, 'acquirer' if it is the buyer, else None.
+    Targets usually jump toward the deal price; buyers often fall, so only targets alert by default."""
+    if PASSIVE_TARGET.search(head or ""):
+        return "target"
+    m = ACQUIRE_VERB.search(head or "")
+    word = _company_word(symbol)
+    if not m or not word:
+        return None
+    left, right = names.norm(head[:m.start()]).split(), names.norm(head[m.end():]).split()
+    if word in right and word not in left:
+        return "target"
+    if word in left and word not in right:
+        return "acquirer"
+    return None
+
+
+def tag(title, text, symbol=""):
+    """Pure function (given the SEC ticker list): (headline, body, ticker) -> [(tag, snippet)] using the 8-K
+    vocabulary in events.TAGS, plus merger_target (this company is being bought) and agreement (a commercial
+    contract or agreement announced in the headline)."""
     head, body = title or "", (text or "")[:4000]
     both = head + ". " + body
     tags = []
@@ -65,12 +109,23 @@ def tag(title, text):
         add("fda_approval", FDA_APPROVAL, both)
     elif FDA_MILESTONE.search(both):
         add("fda_milestone", FDA_MILESTONE, both)
+    if DILUTION.search(head):
+        add("dilution", DILUTION, head)           # "securities purchase agreement" etc. is a stock sale, not a deal
+    elif FINANCING.search(head):
+        add("financing", FINANCING, head)
     if GOV_RX.search(both):
         add("gov_contract", GOV_RX, both)
     if ACQ_DONE.search(head):
         add("acquisition", ACQ_DONE, head)
-    elif MERGER_HEAD.search(head) or MERGER.search(body[:1500]):
-        add("merger", MERGER_HEAD if MERGER_HEAD.search(head) else MERGER, head if MERGER_HEAD.search(head) else body)
+    elif MERGER_HEAD.search(head) or PASSIVE_TARGET.search(head) or MERGER.search(body[:1500]):
+        rx, src = (MERGER_HEAD, head) if MERGER_HEAD.search(head) else \
+                  (PASSIVE_TARGET, head) if PASSIVE_TARGET.search(head) else (MERGER, body)
+        add("merger", rx, src)
+        if merger_side(head, symbol) == "target":
+            add("merger_target", rx, src)
+    if (AGREE_HEAD.search(head) and not {t for t, _ in tags} & {"merger", "acquisition", "gov_contract",
+                                                                  "dilution", "financing"}):
+        add("agreement", AGREE_HEAD, head)
     if EXEC_HEAD.search(head):
         add("exec_change", EXEC_HEAD, head)
     if BANKRUPT.search(head):
@@ -133,26 +188,67 @@ def fetch():
     return [it for it in data if isinstance(it, dict)]
 
 
-def format_alert(r, tags):
-    labels = ", ".join(TAGS[t][0] for t, _ in tags if t in TAGS) or "Press release"
+def _label(t):
+    return EXTRA_LABELS.get(t) or (TAGS[t][0] if t in TAGS else t)
+
+
+def format_alert(r, tags, hit=(), m=None, value=0.0):
+    """hit: the tags that made it alert (shown first). value: stated contract/deal value in USD, if any."""
+    order = [t for t, _ in tags if t in hit] + [t for t, _ in tags if t not in hit]
+    order = [t for t in order if not (t == "merger" and "merger_target" in order)]
+    labels = ", ".join(_label(t) for t in order) or "Press release"
     sym = html.escape(r["symbol"] or "?")
     lag = f" · seen {r['lag_sec'] / 60:.0f} min after release" if r["lag_sec"] is not None else ""
     lines = [f"📰 <b>PRESS RELEASE — {sym}</b> · {html.escape(labels)}",
              html.escape(r["title"][:300]),
              f"{html.escape(r['published'] or '?')} ET · {html.escape(r['site'] or '')}{lag}"]
-    snip = next((s for _, s in tags if s), "")
+    if value and m and m.get("mcap"):
+        lines.append(f"Stated value <b>${value / 1e6:,.0f}M</b> = {value / m['mcap']:.1%} of market cap "
+                     f"(${m['mcap'] / 1e6:,.0f}M)")
+    if m and m.get("price"):
+        lines.append(f"Last price ${m['price']:.2f}")
+    snip = next((s for t, s in tags if s and t in hit), "") or next((s for _, s in tags if s), "")
     if snip:
         lines.append("“" + html.escape(snip[:300]) + "”")
     if r["url"]:
         lines.append(f'<a href="{html.escape(r["url"], quote=True)}">Read the release</a>')
-    lines.append("<i>Newswire release; the 8-K, if any, follows on EDGAR.</i>")
+    lines.append("<i>Newswire release; the 8-K, if any, follows on EDGAR. Not a buy signal by itself.</i>")
     return "\n".join(lines)
 
 
-def market_check(m, tags):
-    """Rejection reason or None: the same price / liquidity / market-cap gates as 8-K alerts.
-    Bankruptcy skips the size gates, as it does for 8-Ks (a warning matters at any size)."""
-    return events.gate(m, ["1.03"] if "bankruptcy" in tags else [])
+VALUE_WORDS = re.compile(r"contracts?|agreements?|orders?|deal|award\w*|partnership|collaboration|licens\w*|"
+                         r"value|worth|backlog|purchase", re.I)
+
+
+def deal_value(title, text):
+    """Stated contract / deal value in USD: the largest amount >= $1M in the headline or in a sentence of the body
+    that talks about a contract, order, agreement or deal. 0.0 if none."""
+    best = 0.0
+    for sent in [title or ""] + re.split(r"(?<=[.;])\s+", (text or "")[:4000]):
+        if "$" in sent and VALUE_WORDS.search(sent):
+            best = max([best] + [a for a in events.amounts(sent) if a >= 1e6])
+    return best
+
+
+def _same(tags):
+    """For duplicate checks a press release's merger_target is the same news as an 8-K's merger."""
+    return {"merger" if t == "merger_target" else t for t in tags}
+
+
+def market_check(m, hit, value=0.0):
+    """Rejection reason or None. The same price / liquidity / market-cap gates as 8-K alerts (bankruptcy skips
+    the size gates). A contract or agreement with nothing else alert-worthy must also state a value of at least
+    PR_CONTRACT_MIN_PCT_MCAP of market cap - most 'partnership' releases don't move the stock."""
+    reason = events.gate(m, ["1.03"] if "bankruptcy" in hit else [])
+    if reason or not hit <= SIZED:
+        return reason
+    if not value:
+        return "no contract value stated"
+    if not m.get("mcap"):
+        return "market cap unknown (can't size the contract)"
+    if value / m["mcap"] < C.PR_CONTRACT_MIN_PCT_MCAP:
+        return f"contract is {value / m['mcap']:.2%} of market cap (< {C.PR_CONTRACT_MIN_PCT_MCAP:.1%})"
+    return None
 
 
 def scan(db, items=None, now=None, send=None, market_get=None):
@@ -178,7 +274,8 @@ def scan(db, items=None, now=None, send=None, market_get=None):
             continue
         pub = published_ts(it.get("publishedDate"))
         lag = round(now - pub, 1) if pub else None
-        tags = tag(it.get("title", ""), it.get("text", ""))
+        sym = (it.get("symbol") or "").upper()
+        tags = tag(it.get("title", ""), it.get("text", ""), sym)
         r = {"key": key, "symbol": (it.get("symbol") or "").upper(), "published": str(it.get("publishedDate") or ""),
              "title": (it.get("title") or "").strip(), "site": it.get("site") or it.get("publisher") or "",
              "url": it.get("url") or "", "tags": json.dumps([t for t, _ in tags]), "first_seen": now,
@@ -189,18 +286,19 @@ def scan(db, items=None, now=None, send=None, market_get=None):
             r["status"] = "stale"
         elif C.PR_MODE == "alert" and want & {t for t, _ in tags} and r["symbol"]:
             hit = want & {t for t, _ in tags}
-            already = db.event_alert_tags(r["symbol"], dup_since) | db.pr_alert_tags(r["symbol"], dup_since)
-            if not hit - already:
-                r["status"], r["note"] = "duplicate", "already alerted: " + ",".join(sorted(hit & already))
+            already = _same(db.event_alert_tags(r["symbol"], dup_since) | db.pr_alert_tags(r["symbol"], dup_since))
+            if not _same(hit) - already:
+                r["status"], r["note"] = "duplicate", "already alerted: " + ",".join(sorted(_same(hit) & already))
             elif db.get_kv("paused") == "1":
                 r["status"] = "paused"
             elif C.PR_MAX_ALERTS_PER_DAY and db.pr_alerts_since(day_start) >= C.PR_MAX_ALERTS_PER_DAY:
                 r["status"] = "capped"
-            elif (reason := market_check(market_get(r["symbol"]), hit)):
+            elif (reason := market_check(m := market_get(r["symbol"]), hit,
+                                         value := deal_value(r["title"], it.get("text")))):
                 r["status"], r["note"] = "rejected_market", reason
             else:
                 try:
-                    send(format_alert(r, tags))
+                    send(format_alert(r, tags, hit, m, value))
                     r["status"], r["alerted_at"] = "alerted", now
                 except Exception as e:
                     log.warning("press release alert for %s failed: %s", r["symbol"], e)
@@ -230,8 +328,11 @@ def summary(db, since_ts):
 
 def _run():
     db = DB(C.DATA_DIR)
+    from .edgar import Edgar
+    edgar = Edgar(C.SEC_USER_AGENT)
     while True:
         try:
+            names.load(edgar)              # refreshed daily; tells a merger's target from its buyer
             if C.ENFORCE_SCHEDULE and not schedule.is_active(start=C.PR_START):
                 time.sleep(min(schedule.seconds_until_active(start=C.PR_START) + 5, 3600))
                 continue

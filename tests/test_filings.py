@@ -640,17 +640,27 @@ def cfg(**kw):
 
 def test_press_release_tags():
     from sec_filing import pressreleases as PR
-    t = lambda title, text="": [x for x, _ in PR.tag(title, text)]
+    t = lambda title, text="", sym="": [x for x, _ in PR.tag(title, text, sym)]
     assert t("Acme Pharma Announces FDA Approval of ZORVAX for Moderate Disease") == ["fda_approval"]
     assert t("Acme Receives Complete Response Letter from FDA") == ["fda_negative"]
     assert t("Acme Plans to Seek FDA Approval Next Year") == []
-    assert t("Nano Widgets to Acquire Gizmo Corp for $1.2 Billion") == ["merger"]
     assert t("Nano Widgets Completes Acquisition of Gizmo Corp") == ["acquisition"]
     assert t("Acme Appoints Jane Doe as Chief Executive Officer") == ["exec_change"]
     assert t("Acme Defense Awarded $400 Million Department of Defense Contract") == ["gov_contract"]
     assert t("Acme Reports Third Quarter 2026 Financial Results") == ["earnings"]
     assert t("Acme Files Voluntary Chapter 11 Petitions") == ["bankruptcy"]
     assert t("Acme to Present at Investor Conference") == []
+    # mergers: only the company being bought gets merger_target (names come from the SEC list in TICKERS)
+    assert t("Nano Widgets to Acquire Gizmo Corp for $1.2 Billion", sym="NANO") == ["merger"]              # buyer
+    assert t("Bioxcel Agrees to Be Acquired by Gizmo for $12.50 Per Share", sym="BIOX") == ["merger", "merger_target"]
+    assert t("Gizmo Corp to Acquire Bioxcel Therapeutics for $900 Million", sym="BIOX") == ["merger", "merger_target"]
+    assert t("Gizmo Corp to Acquire Bioxcel Therapeutics", sym="") == ["merger"]                           # unclear
+    # commercial contracts: yes; stock sales / loans dressed as agreements: no
+    assert t("Nano Widgets Signs $60 Million Supply Agreement with Major Automaker") == ["agreement"]
+    assert t("Nano Widgets Wins Multi-Year Order From Global Retailer") == ["agreement"]
+    assert t("Nano Widgets Enters Into Securities Purchase Agreement for $10 Million Registered Direct Offering") \
+        == ["dilution"]
+    assert t("Nano Widgets Enters Into $50 Million Credit Agreement") == ["financing"]
 
 
 def test_press_release_scan_modes():
@@ -658,55 +668,67 @@ def test_press_release_scan_modes():
     from zoneinfo import ZoneInfo
     ET = ZoneInfo("America/New_York")
     now = dt.datetime(2026, 11, 2, 4, 10, tzinfo=ET).timestamp()
-    def item(n, minutes_ago, title, sym="acme"):
+    def item(n, minutes_ago, title, sym="biox", text=""):
         pub = dt.datetime.fromtimestamp(now - minutes_ago * 60, ET).strftime("%Y-%m-%d %H:%M:%S")
-        return {"symbol": sym, "publishedDate": pub, "title": title, "text": "", "site": "Business Wire",
+        return {"symbol": sym, "publishedDate": pub, "title": title, "text": text, "site": "Business Wire",
                 "url": f"https://example.com/{n}"}
     assert abs(PR.published_ts("2026-11-02 04:00:00") - dt.datetime(2026, 11, 2, 4, 0, tzinfo=ET).timestamp()) < 1
     assert PR.published_ts("") is None and PR.published_ts("junk") is None
     tiny = dict(M_OK, mcap=4e7)
-    mk = lambda t: {"TINY": tiny, "BUST": dict(tiny, price=0.5), "NONE": None}.get(t, M_OK)
+    mk = lambda t: {"TINY": tiny, "NONE": None}.get(t, M_OK)              # M_OK: $20, liquid, $800M cap
     sent = []
     db = DB(tempfile.mkdtemp())
-    deal = " to Acquire Gizmo Corp"
+    sold = " Agrees to Be Acquired by Gizmo for $12.50 Per Share"
     scan = lambda its: PR.scan(db, its, now, sent.append, mk)
     status = lambda rows: [r["status"] for r in rows]
-    assert C.PR_MODE == "alert"                                       # alerts are on by default
-    with cfg(PR_MAX_AGE_MIN=120, PR_MAX_ALERTS_PER_DAY=3, PR_DEDUP_HOURS=18):
+    note = lambda n: db.c.execute(f"SELECT note FROM press_releases WHERE url LIKE '%/{n}'").fetchone()[0]
+    assert C.PR_MODE == "alert" and set(C.PR_ALERT_TAGS.split(",")) == \
+        {"fda_approval", "fda_milestone", "gov_contract", "agreement", "merger_target"}
+    with cfg(PR_MAX_AGE_MIN=120, PR_MAX_ALERTS_PER_DAY=4, PR_DEDUP_HOURS=18):
         # first poll: baseline only, nothing sent, nothing counted
-        assert scan([item(1, 5, "Acme" + deal)]) == [] and sent == []
+        assert scan([item(1, 5, "Bioxcel" + sold)]) == [] and sent == []
         assert db.c.execute("SELECT status FROM press_releases").fetchone()[0] == "baseline"
-        # repeat ignored; tagged release alerts; untagged only logs; backlog is stale
-        new = scan([item(1, 5, "Acme" + deal), item(2, 2, "Acme" + deal), item(3, 1, "Acme to Present at Conference"),
-                    item(4, 300, "Acme" + deal)])
-        assert status(new) == ["alerted", "new"] and len(sent) == 1
-        assert "PRESS RELEASE — ACME" in sent[0] and "Merger" in sent[0] and abs(new[0]["lag_sec"] - 120) < 1
-        assert db.c.execute("SELECT status FROM press_releases WHERE url LIKE '%/4'").fetchone()[0] == "stale"
-        # same ticker + same news type again = duplicate; a different news type still alerts
-        new = scan([item(5, 1, "Acme Announces Merger Agreement Update"),
-                    item(6, 1, "Acme Appoints Jane Doe as Chief Executive Officer")])
-        assert status(new) == ["duplicate", "alerted"] and len(sent) == 2
-        # market gates: small cap and no data rejected; bankruptcy skips the size gates
-        new = scan([item(7, 1, "Tiny" + deal, "tiny"), item(8, 1, "None" + deal, "none"),
-                    item(9, 1, "Bust Files Voluntary Chapter 11 Petitions", "bust")])
-        assert status(new) == ["rejected_market", "rejected_market", "alerted"] and len(sent) == 3
-        assert "market cap" in db.c.execute("SELECT note FROM press_releases WHERE url LIKE '%/7'").fetchone()[0]
-        # daily cap (3) reached
-        assert status(scan([item(10, 1, "Other" + deal, "othr")])) == ["capped"]
+        # repeat ignored; target alerts; untagged and buyer only log; backlog is stale
+        new = scan([item(1, 5, "Bioxcel" + sold), item(2, 2, "Bioxcel" + sold),
+                    item(3, 1, "Bioxcel to Present at Conference"),
+                    item(4, 1, "Nano Widgets to Acquire Gizmo Corp", "nano"), item(5, 300, "Bioxcel" + sold)])
+        assert status(new) == ["alerted", "new", "new"] and len(sent) == 1
+        assert "PRESS RELEASE — BIOX" in sent[0] and "Being acquired" in sent[0] and abs(new[0]["lag_sec"] - 120) < 1
+        assert db.c.execute("SELECT status FROM press_releases WHERE url LIKE '%/5'").fetchone()[0] == "stale"
+        # same ticker + same news again = duplicate
+        assert status(scan([item(6, 1, "Bioxcel Enters Into Definitive Agreement to Be Acquired by Gizmo")])) == \
+            ["duplicate"]
+        # contracts: sized against market cap ($800M): $60M alerts, $2M and no value are logged
+        new = scan([item(7, 1, "Nano Widgets Signs $60 Million Supply Agreement with Automaker", "nano"),
+                    item(8, 1, "Acme Wins $2 Million Order From Retailer", "acme"),
+                    item(9, 1, "Vertex Pharmaceuticals Announces Strategic Partnership With Gizmo", "vrtx")])
+        assert status(new) == ["alerted", "rejected_market", "rejected_market"] and len(sent) == 2
+        assert "Stated value <b>$60M</b> = 7.5% of market cap" in sent[1]
+        assert "0.25% of market cap" in note(8) and note(9) == "no contract value stated"
+        # market gates: small cap and no data rejected
+        new = scan([item(10, 1, "Tiny Corp Announces FDA Approval of ZORVAX", "tiny"),
+                    item(11, 1, "None Corp Announces FDA Approval of ZORVAX", "none")])
+        assert status(new) == ["rejected_market", "rejected_market"] and "market cap" in note(10)
+        # stock sale "agreement" never alerts
+        assert status(scan([item(12, 1, "Nano Widgets Enters Into Securities Purchase Agreement for $40 Million "
+                                        "Registered Direct Offering", "nano")])) == ["new"]
+        # FDA approval alerts; then the daily cap (4) is reached
+        assert status(scan([item(13, 1, "Acme Announces FDA Approval of ZORVAX", "acme")])) == ["alerted"]
+        assert status(scan([item(14, 1, "Vertex Announces FDA Approval of ZORVAX", "vrtx")])) == ["alerted"]
+        assert status(scan([item(15, 1, "Other Corp Announces FDA Approval of ZORVAX", "othr")])) == ["capped"]
     with cfg(PR_MAX_ALERTS_PER_DAY=0):
         db.set_kv("paused", "1")
-        assert status(scan([item(11, 1, "Paws" + deal, "paws")])) == ["paused"]
+        assert status(scan([item(16, 1, "Paws Corp Announces FDA Approval of ZORVAX", "paws")])) == ["paused"]
         db.set_kv("paused", "0")
     with cfg(PR_MODE="log"):
-        assert status(scan([item(12, 1, "Logd" + deal, "logd")])) == ["new"] and len(sent) == 3
+        assert status(scan([item(17, 1, "Logd Corp Announces FDA Approval of ZORVAX", "logd")])) == ["new"]
+        assert len(sent) == 4
         line = PR.summary(db, now - 3600)
-        assert "Press releases (log): 10 new today" in line and "lag median" in line
+        assert "Press releases (log): 15 new today" in line and "lag median" in line
     # the other direction: an 8-K or FDA record with news already sent from the release is not alerted again
-    assert db.pr_alert_tags("ACME", now - 3600) == {"merger", "exec_change"}
-    assert feeds._already_alerted_fda(db, "ACME", TODAY) is False
-    db.pr_add({"key": "fda", "symbol": "VRTX", "published": "", "title": "", "site": "", "url": "",
-               "tags": '["fda_approval"]', "first_seen": now, "lag_sec": 0, "status": "alerted", "alerted_at": time.time()})
-    assert feeds._already_alerted_fda(db, "VRTX", schedule_today())
+    assert db.pr_alert_tags("BIOX", now - 3600) == {"merger", "merger_target"}
+    assert feeds._already_alerted_fda(db, "ACME", schedule_today())
+    assert not feeds._already_alerted_fda(db, "NANO", schedule_today())
 
 
 def schedule_today():
